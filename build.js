@@ -155,6 +155,14 @@ const tauriConfPath = path.join(rootDir, 'src-tauri', 'tauri.conf.json');
 const pkgJsonPath = path.join(rootDir, 'package.json');
 const distBuildsDir = path.join(rootDir, 'dist-builds');
 
+function getTauriCmd() {
+  const localTauriJs = path.join(rootDir, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
+  if (fs.existsSync(localTauriJs)) {
+    return `"${process.execPath}" "${localTauriJs}"`;
+  }
+  return 'npx @tauri-apps/cli';
+}
+
 // Create output dist-builds directories
 fs.mkdirSync(path.join(distBuildsDir, 'android'), { recursive: true });
 fs.mkdirSync(path.join(distBuildsDir, 'windows'), { recursive: true });
@@ -194,7 +202,7 @@ if (customLogo) {
     process.exit(1);
   }
   log(`Generating Tauri icon suite from: ${iconPath}`);
-  runCmd(`npx tauri icon "${iconPath}"`);
+  runCmd(`${getTauriCmd()} icon "${iconPath}"`);
   logSuccess('Generated icon suite in src-tauri/icons/');
 }
 
@@ -224,18 +232,18 @@ if (buildAndroid) {
     if (fs.existsSync(genAndroidDir)) {
       fs.rmSync(genAndroidDir, { recursive: true, force: true });
     }
-    runCmd('npx tauri android init');
+    runCmd(`${getTauriCmd()} android init`);
   }
 
-  let buildSuccess = runCmd('npx tauri android build --apk', { allowFailure: true });
+  let buildSuccess = runCmd(`${getTauriCmd()} android build --apk`, { allowFailure: true });
   if (!buildSuccess) {
     logWarn('Android build failed. Attempting clean re-init of gen/android...');
     const genAndroidDir = path.join(rootDir, 'src-tauri', 'gen', 'android');
     if (fs.existsSync(genAndroidDir)) {
       fs.rmSync(genAndroidDir, { recursive: true, force: true });
     }
-    runCmd('npx tauri android init');
-    runCmd('npx tauri android build --apk');
+    runCmd(`${getTauriCmd()} android init`);
+    runCmd(`${getTauriCmd()} android build --apk`);
   }
 
   const apkDir = path.join(rootDir, 'src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk');
@@ -296,9 +304,9 @@ if (buildAndroid) {
 if (buildExe) {
   log('Starting Windows (.exe) build...');
   if (isWin) {
-    runCmd('npx tauri build');
+    runCmd(`${getTauriCmd()} build`);
   } else {
-    runCmd('npx tauri build --target x86_64-pc-windows-gnu');
+    runCmd(`${getTauriCmd()} build --target x86_64-pc-windows-gnu`);
   }
 
   const possibleReleaseDirs = [
@@ -362,7 +370,7 @@ if (buildExe) {
 if (buildMac) {
   log('Starting macOS build...');
   const destMacDir = path.join(distBuildsDir, 'mac');
-  const macSuccess = runCmd('npx tauri build', { allowFailure: true });
+  const macSuccess = runCmd(`${getTauriCmd()} build`, { allowFailure: true });
 
   if (macSuccess) {
     const bundleDir = path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle');
@@ -379,9 +387,9 @@ if (buildMac) {
 if (buildIos) {
   log('Starting iOS build...');
   const destIosDir = path.join(distBuildsDir, 'ios');
-  let iosSuccess = runCmd('npx tauri ios build', { allowFailure: true });
+  let iosSuccess = runCmd(`${getTauriCmd()} ios build`, { allowFailure: true });
   if (!iosSuccess) {
-    iosSuccess = runCmd('npx tauri ios init && npx tauri ios build', { allowFailure: true });
+    iosSuccess = runCmd(`${getTauriCmd()} ios init && ${getTauriCmd()} ios build`, { allowFailure: true });
   }
 
   if (iosSuccess) {
