@@ -170,6 +170,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     formData.append('targets', targets);
 
+    // Build Mode (Fast Hot-Swap vs Clean Rebuild)
+    const buildModeRadio = document.querySelector('input[name="buildMode"]:checked');
+    if (buildModeRadio && buildModeRadio.value === 'clean') {
+      formData.append('clean', 'true');
+    }
+
     // Transition UI to Progress
     formSection.classList.add('hidden');
     statusSection.classList.remove('hidden');

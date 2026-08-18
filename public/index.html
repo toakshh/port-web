@@ -121,6 +121,37 @@
             </div>
           </div>
 
+          <!-- 4. Build Mode & Optimization -->
+          <div class="form-group">
+            <label class="form-label">
+              <span class="step-num">4</span> Build Mode & Optimization
+            </label>
+            <div class="modes-grid">
+              <label class="mode-card">
+                <input type="radio" name="buildMode" value="fast" checked />
+                <div class="mode-content">
+                  <div class="mode-header">
+                    <span class="mode-icon">⚡</span>
+                    <span class="mode-name">Fast Hot-Swap</span>
+                    <span class="badge badge-recommended">Recommended</span>
+                  </div>
+                  <span class="mode-sub">Fastest compilation (~10s). Re-uses pre-built target caches to update web assets.</span>
+                </div>
+              </label>
+
+              <label class="mode-card">
+                <input type="radio" name="buildMode" value="clean" />
+                <div class="mode-content">
+                  <div class="mode-header">
+                    <span class="mode-icon">🧹</span>
+                    <span class="mode-name">Clean Full Rebuild</span>
+                  </div>
+                  <span class="mode-sub">Fresh compilation (~1-2m). Purges target release caches and rebuilds all native packages.</span>
+                </div>
+              </label>
+            </div>
+          </div>
+
           <!-- Submit Button -->
           <button type="submit" class="btn-primary" id="btnSubmit">
             🚀 Convert Web App to Native Apps
