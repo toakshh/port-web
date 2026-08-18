@@ -1,0 +1,23 @@
+<svg width="62" height="62" viewBox="0 0 62 62" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g filter="url(#filter0_i_5705_10915)">
+<circle cx="31" cy="31" r="30.5" fill="#616161" stroke="#F1F1F2"/>
+</g>
+<g clip-path="url(#clip0_5705_10915)">
+<path fill-rule="evenodd" clip-rule="evenodd" d="M33 31C33 32.0764 32.104 32.95 31 32.95C29.896 32.95 29 32.0764 29 31C29 29.9236 29.896 29.05 31 29.05C32.104 29.05 33 29.9236 33 31ZM41 32.95H42.82C41.972 37.8387 38.014 41.698 33 42.5248V40.75C33 39.6736 32.104 38.8 31 38.8C29.896 38.8 29 39.6736 29 40.75V42.5248C23.986 41.698 20.028 37.8387 19.18 32.95H21C22.104 32.95 23 32.0764 23 31C23 29.9236 22.104 29.05 21 29.05H19.18C20.028 24.1614 23.986 20.302 29 19.4752V21.25C29 22.3264 29.896 23.2 31 23.2C32.104 23.2 33 22.3264 33 21.25V19.4752C38.014 20.302 41.972 24.1614 42.82 29.05H41C39.896 29.05 39 29.9236 39 31C39 32.0764 39.896 32.95 41 32.95ZM49 29.05H46.862C45.958 21.9969 40.234 16.4157 33 15.5343V13.45C33 12.3736 32.104 11.5 31 11.5C29.896 11.5 29 12.3736 29 13.45V15.5343C21.766 16.4157 16.042 21.9969 15.138 29.05H13C11.896 29.05 11 29.9236 11 31C11 32.0764 11.896 32.95 13 32.95H15.138C16.042 40.0032 21.766 45.5843 29 46.4657V48.55C29 49.6264 29.896 50.5 31 50.5C32.104 50.5 33 49.6264 33 48.55V46.4657C40.234 45.5843 45.958 40.0032 46.862 32.95H49C50.104 32.95 51 32.0764 51 31C51 29.9236 50.104 29.05 49 29.05Z" fill="white"/>
+</g>
+<defs>
+<filter id="filter0_i_5705_10915" x="0" y="0" width="62" height="66" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+<feOffset dy="4"/>
+<feGaussianBlur stdDeviation="9.5"/>
+<feComposite in2="hardAlpha" operator="arithmetic" k2="-1" k3="1"/>
+<feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/>
+<feBlend mode="color-dodge" in2="shape" result="effect1_innerShadow_5705_10915"/>
+</filter>
+<clipPath id="clip0_5705_10915">
+<rect width="40" height="39" fill="white" transform="translate(11 11.5)"/>
+</clipPath>
+</defs>
+</svg>
