@@ -46,8 +46,15 @@ function runCmd(cmd, opts = {}) {
 }
 
 // 1. Setup Environment Variables
-const JDK_DIR = '/home/akshh16/jdk';
-const ANDROID_SDK_DIR = '/home/akshh16/android-sdk';
+const homeDir = os.homedir();
+const isWin = os.platform() === 'win32';
+
+// Detect Cargo binary path
+const cargoBinDir = path.join(homeDir, '.cargo', 'bin');
+
+// Detect JDK and Android SDK paths across Linux / Windows
+const JDK_DIR = process.env.JAVA_HOME || (isWin ? path.join(homeDir, 'jdk') : '/home/akshh16/jdk');
+const ANDROID_SDK_DIR = process.env.ANDROID_HOME || (isWin ? path.join(homeDir, 'AppData', 'Local', 'Android', 'Sdk') : '/home/akshh16/android-sdk');
 
 if (!process.env.JAVA_HOME && fs.existsSync(JDK_DIR)) {
   process.env.JAVA_HOME = JDK_DIR;
@@ -57,13 +64,24 @@ if (!process.env.ANDROID_HOME && fs.existsSync(ANDROID_SDK_DIR)) {
 }
 
 const extraPaths = [];
+if (fs.existsSync(cargoBinDir)) {
+  extraPaths.push(cargoBinDir);
+}
 if (process.env.JAVA_HOME) {
   extraPaths.push(path.join(process.env.JAVA_HOME, 'bin'));
 }
 if (process.env.ANDROID_HOME) {
-  extraPaths.push(path.join(process.env.ANDROID_HOME, 'build-tools', '35.0.0'));
-  extraPaths.push(path.join(process.env.ANDROID_HOME, 'build-tools', '34.0.0'));
+  const buildToolsDir = path.join(process.env.ANDROID_HOME, 'build-tools');
+  if (fs.existsSync(buildToolsDir)) {
+    try {
+      const versions = fs.readdirSync(buildToolsDir).sort().reverse();
+      for (const ver of versions) {
+        extraPaths.push(path.join(buildToolsDir, ver));
+      }
+    } catch (_) {}
+  }
   extraPaths.push(path.join(process.env.ANDROID_HOME, 'platform-tools'));
+  extraPaths.push(path.join(process.env.ANDROID_HOME, 'cmdline-tools', 'latest', 'bin'));
 }
 
 process.env.PATH = [...extraPaths, process.env.PATH].join(path.delimiter);
@@ -277,24 +295,36 @@ if (buildAndroid) {
 // Windows (.exe)
 if (buildExe) {
   log('Starting Windows (.exe) build...');
-  runCmd('npx tauri build --target x86_64-pc-windows-gnu');
+  if (isWin) {
+    runCmd('npx tauri build');
+  } else {
+    runCmd('npx tauri build --target x86_64-pc-windows-gnu');
+  }
 
-  const releaseDir = path.join(rootDir, 'src-tauri', 'target', 'x86_64-pc-windows-gnu', 'release');
+  const possibleReleaseDirs = [
+    path.join(rootDir, 'src-tauri', 'target', 'release'),
+    path.join(rootDir, 'src-tauri', 'target', 'x86_64-pc-windows-msvc', 'release'),
+    path.join(rootDir, 'src-tauri', 'target', 'x86_64-pc-windows-gnu', 'release')
+  ];
+
   const destWinDir = path.join(distBuildsDir, 'windows');
 
   // Copy app.exe
   let exeFound = false;
-  if (fs.existsSync(releaseDir)) {
-    for (const file of fs.readdirSync(releaseDir)) {
-      if (file.endsWith('.exe')) {
-        const srcExe = path.join(releaseDir, file);
-        const destExe = path.join(destWinDir, 'app.exe');
-        fs.copyFileSync(srcExe, destExe);
-        exeFound = true;
-        logSuccess(`Copied binary to ${destExe}`);
-        break;
+  for (const releaseDir of possibleReleaseDirs) {
+    if (fs.existsSync(releaseDir)) {
+      for (const file of fs.readdirSync(releaseDir)) {
+        if (file.endsWith('.exe') && !file.includes('setup')) {
+          const srcExe = path.join(releaseDir, file);
+          const destExe = path.join(destWinDir, 'app.exe');
+          fs.copyFileSync(srcExe, destExe);
+          exeFound = true;
+          logSuccess(`Copied binary to ${destExe}`);
+          break;
+        }
       }
     }
+    if (exeFound) break;
   }
 
   if (!exeFound) {
@@ -303,19 +333,22 @@ if (buildExe) {
   }
 
   // Copy installer tripo-setup.exe
-  const nsisDir = path.join(releaseDir, 'bundle', 'nsis');
   let setupFound = false;
-  if (fs.existsSync(nsisDir)) {
-    for (const file of fs.readdirSync(nsisDir)) {
-      if (file.endsWith('.exe')) {
-        const srcSetup = path.join(nsisDir, file);
-        const destSetup = path.join(destWinDir, 'tripo-setup.exe');
-        fs.copyFileSync(srcSetup, destSetup);
-        setupFound = true;
-        logSuccess(`Copied setup installer to ${destSetup}`);
-        break;
+  for (const releaseDir of possibleReleaseDirs) {
+    const nsisDir = path.join(releaseDir, 'bundle', 'nsis');
+    if (fs.existsSync(nsisDir)) {
+      for (const file of fs.readdirSync(nsisDir)) {
+        if (file.endsWith('.exe')) {
+          const srcSetup = path.join(nsisDir, file);
+          const destSetup = path.join(destWinDir, 'tripo-setup.exe');
+          fs.copyFileSync(srcSetup, destSetup);
+          setupFound = true;
+          logSuccess(`Copied setup installer to ${destSetup}`);
+          break;
+        }
       }
     }
+    if (setupFound) break;
   }
 
   if (!setupFound) {
