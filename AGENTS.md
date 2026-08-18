@@ -2,6 +2,13 @@
 
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
+- **Unified multi-platform build pipeline**: Run `./build` or `npm run build -- <args>`.
+  - `./build --android` : Builds signed Android APK at `dist-builds/android/tripo-app-signed.apk`.
+  - `./build --exe` : Builds Windows `.exe` executable & installer at `dist-builds/windows/`.
+  - `./build --mac` : Builds macOS app bundle & `.dmg` at `dist-builds/mac/`.
+  - `./build --ios` : Builds iOS app package at `dist-builds/ios/`.
+  - `./build --all` : Sequentially builds all platform targets.
+  - Options: `--name "<Custom App Name>"`, `--logo "<path/to/icon.png>"`, `--identifier "<com.custom.app>"`.
 - **Frontend static assets**: Located in `dist/` and bundled directly into Tauri app (`tauri.conf.json` -> `frontendDist: "../dist"`).
 - **Environment variables required for builds**:
   ```bash
