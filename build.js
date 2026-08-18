@@ -14,6 +14,8 @@ const colors = {
   cyan: '\x1b[36m',
 };
 
+const rootDir = process.cwd();
+
 function log(msg) {
   console.log(`${colors.cyan}[BUILD]${colors.reset} ${msg}`);
 }
@@ -33,7 +35,7 @@ function logError(msg) {
 function runCmd(cmd, opts = {}) {
   log(`Executing: ${cmd}`);
   try {
-    execSync(cmd, { stdio: 'inherit', env: process.env, ...opts });
+    execSync(cmd, { stdio: 'inherit', env: process.env, cwd: rootDir, ...opts });
     return true;
   } catch (err) {
     if (opts.allowFailure) {
@@ -150,7 +152,6 @@ Customization:
 `);
 }
 
-const rootDir = process.cwd();
 const tauriConfPath = path.join(rootDir, 'src-tauri', 'tauri.conf.json');
 const pkgJsonPath = path.join(rootDir, 'package.json');
 const distBuildsDir = path.join(rootDir, 'dist-builds');
