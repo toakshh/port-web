@@ -247,6 +247,13 @@ app.post('/api/convert', convertFields, async (req, res) => {
       buildCmdArgs.push('--logo', logoPathInJob);
     }
 
+    const isCleanBuild = (req.body.clean === 'true' || req.body.clean === '1');
+    if (isCleanBuild) {
+      buildCmdArgs.push('--clean');
+    } else {
+      buildCmdArgs.push('--fast');
+    }
+
     // Backup tauri.conf.json and package.json to restore afterwards
     const tauriConfPath = path.join(__dirname, 'src-tauri', 'tauri.conf.json');
     const pkgJsonPath = path.join(__dirname, 'package.json');

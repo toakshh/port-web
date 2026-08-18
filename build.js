@@ -96,6 +96,8 @@ let buildExe = false;
 let buildMac = false;
 let buildIos = false;
 let buildAll = false;
+let isClean = false;
+let isFast = false;
 
 let customName = null;
 let customLogo = null;
@@ -108,6 +110,8 @@ for (let i = 0; i < args.length; i++) {
   else if (arg === '--mac') buildMac = true;
   else if (arg === '--ios') buildIos = true;
   else if (arg === '--all') buildAll = true;
+  else if (arg === '--clean') isClean = true;
+  else if (arg === '--fast' || arg === '--quick') isFast = true;
   else if (arg === '--name' && i + 1 < args.length) {
     customName = args[++i];
   } else if ((arg === '--logo' || arg === '--icon') && i + 1 < args.length) {
@@ -156,15 +160,37 @@ const tauriConfPath = path.join(rootDir, 'src-tauri', 'tauri.conf.json');
 const pkgJsonPath = path.join(rootDir, 'package.json');
 const distBuildsDir = path.join(rootDir, 'dist-builds');
 
+const buildStartTime = Date.now() - 5000;
+
 function getTauriCmd() {
   const localTauriJs = path.join(rootDir, 'node_modules', '@tauri-apps', 'cli', 'tauri.js');
   if (fs.existsSync(localTauriJs)) {
-    return `"${process.execPath}" "${localTauriJs}"`;
+    try {
+      execSync(`"${process.execPath}" "${localTauriJs}" --version`, { stdio: 'ignore', env: process.env });
+      return `"${process.execPath}" "${localTauriJs}"`;
+    } catch (e) {
+      logWarn('Local Tauri CLI missing native binary binding. Attempting auto-installation...');
+      if (isWin) {
+        runCmd('npm install --no-save @tauri-apps/cli-win32-x64-msvc', { allowFailure: true });
+      } else {
+        runCmd('npm install --no-save @tauri-apps/cli-linux-x64-gnu', { allowFailure: true });
+      }
+      try {
+        execSync(`"${process.execPath}" "${localTauriJs}" --version`, { stdio: 'ignore', env: process.env });
+        return `"${process.execPath}" "${localTauriJs}"`;
+      } catch (_) {}
+    }
   }
-  return 'npx @tauri-apps/cli';
+  return 'npx --yes @tauri-apps/cli';
 }
 
-// Create output dist-builds directories
+if (isClean) {
+  log('Performing clean rebuild: clearing target release cache...');
+  fs.rmSync(path.join(rootDir, 'src-tauri', 'target'), { recursive: true, force: true });
+}
+
+// Clear old output dist-builds directory
+fs.rmSync(distBuildsDir, { recursive: true, force: true });
 fs.mkdirSync(path.join(distBuildsDir, 'android'), { recursive: true });
 fs.mkdirSync(path.join(distBuildsDir, 'windows'), { recursive: true });
 fs.mkdirSync(path.join(distBuildsDir, 'mac'), { recursive: true });
@@ -252,14 +278,20 @@ if (buildAndroid) {
   ensureRustTarget('x86_64-linux-android');
 
   const genAndroidDir = path.join(rootDir, 'src-tauri', 'gen', 'android');
-  if (!fs.existsSync(genAndroidDir)) {
-    log('Initializing Android Studio project...');
-    runCmd(`${getTauriCmd()} android init --ci`, { allowFailure: true });
+  let buildSuccess = false;
+  if (isFast && fs.existsSync(genAndroidDir)) {
+    log('Fast mode active: using existing Android Studio initialization...');
+    buildSuccess = runCmd(`${getTauriCmd()} android build --apk`, { allowFailure: true });
+  } else {
+    if (!fs.existsSync(genAndroidDir)) {
+      log('Initializing Android Studio project...');
+      runCmd(`${getTauriCmd()} android init --ci`, { allowFailure: true });
+    }
+    patchBuildTaskKt();
+    buildSuccess = runCmd(`${getTauriCmd()} android build --apk`, { allowFailure: true });
   }
-  patchBuildTaskKt();
 
-  let buildSuccess = runCmd(`${getTauriCmd()} android build --apk`, { allowFailure: true });
-  if (!buildSuccess) {
+  if (!buildSuccess && !isFast) {
     logWarn('Android build failed on first attempt. Retrying with init update...');
     runCmd(`${getTauriCmd()} android init --ci`, { allowFailure: true });
     patchBuildTaskKt();
@@ -270,13 +302,16 @@ if (buildAndroid) {
   let foundApk = null;
 
   function findApk(dir) {
-    if (!fs.existsSync(dir)) return;
+    if (!fs.existsSync(dir) || !buildSuccess) return;
     for (const file of fs.readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, file.name);
       if (file.isDirectory()) {
         findApk(fullPath);
       } else if (file.name.endsWith('.apk') && !file.name.endsWith('-signed.apk')) {
-        foundApk = fullPath;
+        const stat = fs.statSync(fullPath);
+        if (stat.mtimeMs >= buildStartTime) {
+          foundApk = fullPath;
+        }
       }
     }
   }
@@ -337,60 +372,70 @@ if (buildExe) {
     exeSuccess = runCmd(`${getTauriCmd()} build --target x86_64-pc-windows-gnu`, { allowFailure: true });
   }
 
-  const possibleReleaseDirs = [
-    path.join(rootDir, 'src-tauri', 'target', 'release'),
-    path.join(rootDir, 'src-tauri', 'target', 'x86_64-pc-windows-msvc', 'release'),
-    path.join(rootDir, 'src-tauri', 'target', 'x86_64-pc-windows-gnu', 'release')
-  ];
+  if (!exeSuccess) {
+    logError('Windows build command failed. Rejecting stale binaries from previous runs.');
+  } else {
+    const possibleReleaseDirs = [
+      path.join(rootDir, 'src-tauri', 'target', 'release'),
+      path.join(rootDir, 'src-tauri', 'target', 'x86_64-pc-windows-msvc', 'release'),
+      path.join(rootDir, 'src-tauri', 'target', 'x86_64-pc-windows-gnu', 'release')
+    ];
 
-  const destWinDir = path.join(distBuildsDir, 'windows');
+    const destWinDir = path.join(distBuildsDir, 'windows');
 
-  // Copy app.exe
-  let exeFound = false;
-  for (const releaseDir of possibleReleaseDirs) {
-    if (fs.existsSync(releaseDir)) {
-      for (const file of fs.readdirSync(releaseDir)) {
-        if (file.endsWith('.exe') && !file.includes('setup')) {
-          const srcExe = path.join(releaseDir, file);
-          const destExe = path.join(destWinDir, 'app.exe');
-          fs.copyFileSync(srcExe, destExe);
-          exeFound = true;
-          logSuccess(`Copied binary to ${destExe}`);
-          break;
-        }
-      }
-    }
-    if (exeFound) break;
-  }
-
-  if (exeFound) {
-    successfulBuilds++;
-    // Copy installer tripo-setup.exe if available
-    let setupFound = false;
+    // Copy app.exe (ensuring it was modified during current build run)
+    let exeFound = false;
     for (const releaseDir of possibleReleaseDirs) {
-      const nsisDir = path.join(releaseDir, 'bundle', 'nsis');
-      if (fs.existsSync(nsisDir)) {
-        for (const file of fs.readdirSync(nsisDir)) {
-          if (file.endsWith('.exe')) {
-            const srcSetup = path.join(nsisDir, file);
-            const destSetup = path.join(destWinDir, 'tripo-setup.exe');
-            fs.copyFileSync(srcSetup, destSetup);
-            setupFound = true;
-            logSuccess(`Copied setup installer to ${destSetup}`);
-            break;
+      if (fs.existsSync(releaseDir)) {
+        for (const file of fs.readdirSync(releaseDir)) {
+          if (file.endsWith('.exe') && !file.includes('setup')) {
+            const srcExe = path.join(releaseDir, file);
+            const stat = fs.statSync(srcExe);
+            if (stat.mtimeMs >= buildStartTime) {
+              const destExe = path.join(destWinDir, 'app.exe');
+              fs.copyFileSync(srcExe, destExe);
+              exeFound = true;
+              logSuccess(`Copied fresh binary to ${destExe}`);
+              break;
+            }
           }
         }
       }
-      if (setupFound) break;
+      if (exeFound) break;
     }
 
-    if (!setupFound) {
-      logWarn('NSIS setup executable not found in bundle directory.');
+    if (exeFound) {
+      successfulBuilds++;
+      // Copy installer tripo-setup.exe if available
+      let setupFound = false;
+      for (const releaseDir of possibleReleaseDirs) {
+        const nsisDir = path.join(releaseDir, 'bundle', 'nsis');
+        if (fs.existsSync(nsisDir)) {
+          for (const file of fs.readdirSync(nsisDir)) {
+            if (file.endsWith('.exe')) {
+              const srcSetup = path.join(nsisDir, file);
+              const stat = fs.statSync(srcSetup);
+              if (stat.mtimeMs >= buildStartTime) {
+                const destSetup = path.join(destWinDir, 'tripo-setup.exe');
+                fs.copyFileSync(srcSetup, destSetup);
+                setupFound = true;
+                logSuccess(`Copied fresh setup installer to ${destSetup}`);
+                break;
+              }
+            }
+          }
+        }
+        if (setupFound) break;
+      }
+
+      if (!setupFound) {
+        logWarn('NSIS setup executable not found in bundle directory.');
+      } else {
+        logSuccess(`Windows build completed: ${destWinDir}`);
+      }
     } else {
-      logSuccess(`Windows build completed: ${destWinDir}`);
+      logError('Fresh Windows .exe binary not generated.');
     }
-  } else {
-    logWarn('Windows .exe binary not found or build failed on this host OS.');
   }
 }
 

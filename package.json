@@ -16,6 +16,12 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"
   },
+  "optionalDependencies": {
+    "@tauri-apps/cli-win32-x64-msvc": "^2.11.4",
+    "@tauri-apps/cli-linux-x64-gnu": "^2.11.4",
+    "@tauri-apps/cli-darwin-x64": "^2.11.4",
+    "@tauri-apps/cli-darwin-arm64": "^2.11.4"
+  },
   "dependencies": {
     "adm-zip": "^0.6.0",
     "cors": "^2.8.6",
