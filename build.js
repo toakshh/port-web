@@ -51,8 +51,8 @@ function runCmd(cmd, opts = {}) {
 const homeDir = os.homedir();
 const isWin = os.platform() === 'win32';
 
-// Detect Cargo binary paths across Windows and Linux
-function getCargoPaths() {
+// Detect Cargo binary paths across Windows and Linux, creating WSL shim fallback if needed
+function ensureCargoEnv() {
   const candidates = [
     process.env.CARGO_HOME ? path.join(process.env.CARGO_HOME, 'bin') : null,
     path.join(homeDir, '.cargo', 'bin'),
@@ -65,13 +65,46 @@ function getCargoPaths() {
     'C:\\Program Files\\Rust\\bin'
   ].filter(Boolean);
 
-  const validPaths = [];
+  const extraPaths = [];
   for (const p of candidates) {
-    if (fs.existsSync(p) && !validPaths.includes(p)) {
-      validPaths.push(p);
+    if (fs.existsSync(p) && !extraPaths.includes(p)) {
+      extraPaths.push(p);
     }
   }
-  return validPaths;
+
+  let cargoFound = false;
+  try {
+    const tempEnv = { ...process.env, PATH: [...extraPaths, process.env.PATH || ''].join(path.delimiter) };
+    const checkCmd = isWin ? 'where cargo' : 'which cargo';
+    const foundCargo = execSync(checkCmd, { encoding: 'utf8', env: tempEnv }).trim().split(/[\r\n]+/)[0];
+    if (foundCargo && fs.existsSync(foundCargo)) {
+      cargoFound = true;
+      const cargoBinDir = path.dirname(foundCargo.trim());
+      if (!extraPaths.includes(cargoBinDir)) {
+        extraPaths.push(cargoBinDir);
+      }
+    }
+  } catch (_) {}
+
+  // If executing natively on Windows and cargo is missing, auto-create WSL bridge shim
+  if (isWin && !cargoFound) {
+    try {
+      execSync('wsl cargo --version', { stdio: 'ignore' });
+      const shimDir = path.join(__dirname, '.cargo-wsl-shim');
+      if (!fs.existsSync(shimDir)) {
+        fs.mkdirSync(shimDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(shimDir, 'cargo.cmd'), '@echo off\r\nwsl cargo %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'rustc.cmd'), '@echo off\r\nwsl rustc %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'rustup.cmd'), '@echo off\r\nwsl rustup %*\r\n');
+      if (!extraPaths.includes(shimDir)) {
+        extraPaths.unshift(shimDir);
+      }
+      console.log('[ENV] Created WSL Cargo bridge shim for native Windows execution.');
+    } catch (_) {}
+  }
+
+  return extraPaths;
 }
 
 // Detect JDK and Android SDK paths across Linux / Windows
@@ -85,19 +118,7 @@ if (!process.env.ANDROID_HOME && fs.existsSync(ANDROID_SDK_DIR)) {
   process.env.ANDROID_HOME = ANDROID_SDK_DIR;
 }
 
-const extraPaths = [...getCargoPaths()];
-
-// Try locating cargo via system command if not found yet
-try {
-  const checkCmd = isWin ? 'where cargo' : 'which cargo';
-  const foundCargo = execSync(checkCmd, { encoding: 'utf8', env: process.env }).trim().split(/[\r\n]+/)[0];
-  if (foundCargo && fs.existsSync(foundCargo)) {
-    const cargoBinDir = path.dirname(foundCargo.trim());
-    if (!extraPaths.includes(cargoBinDir)) {
-      extraPaths.push(cargoBinDir);
-    }
-  }
-} catch (_) {}
+const extraPaths = ensureCargoEnv();
 
 if (process.env.JAVA_HOME) {
   extraPaths.push(path.join(process.env.JAVA_HOME, 'bin'));

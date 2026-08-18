@@ -3,6 +3,7 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const AdmZip = require('adm-zip');
 const { execSync } = require('child_process');
 
@@ -139,16 +140,37 @@ function setupEnv() {
     }
   }
 
+  let cargoFound = false;
   try {
+    const tempEnv = { ...process.env, PATH: [...extraPaths, process.env.PATH || ''].join(path.delimiter) };
     const checkCmd = isWin ? 'where cargo' : 'which cargo';
-    const foundCargo = execSync(checkCmd, { encoding: 'utf8', env: process.env }).trim().split(/[\r\n]+/)[0];
+    const foundCargo = execSync(checkCmd, { encoding: 'utf8', env: tempEnv }).trim().split(/[\r\n]+/)[0];
     if (foundCargo && fs.existsSync(foundCargo)) {
+      cargoFound = true;
       const cargoBinDir = path.dirname(foundCargo.trim());
       if (!extraPaths.includes(cargoBinDir)) {
         extraPaths.push(cargoBinDir);
       }
     }
   } catch (_) {}
+
+  // If executing natively on Windows and cargo is missing, auto-create WSL bridge shim
+  if (isWin && !cargoFound) {
+    try {
+      execSync('wsl cargo --version', { stdio: 'ignore' });
+      const shimDir = path.join(__dirname, '.cargo-wsl-shim');
+      if (!fs.existsSync(shimDir)) {
+        fs.mkdirSync(shimDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(shimDir, 'cargo.cmd'), '@echo off\r\nwsl cargo %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'rustc.cmd'), '@echo off\r\nwsl rustc %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'rustup.cmd'), '@echo off\r\nwsl rustup %*\r\n');
+      if (!extraPaths.includes(shimDir)) {
+        extraPaths.unshift(shimDir);
+      }
+      console.log('[ENV] Created WSL Cargo bridge shim for native Windows execution.');
+    } catch (_) {}
+  }
 
   if (process.env.JAVA_HOME) {
     extraPaths.push(path.join(process.env.JAVA_HOME, 'bin'));
