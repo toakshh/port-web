@@ -162,13 +162,13 @@ function setupEnv() {
       if (!fs.existsSync(shimDir)) {
         fs.mkdirSync(shimDir, { recursive: true });
       }
-      fs.writeFileSync(path.join(shimDir, 'cargo.cmd'), '@echo off\r\nwsl cargo %*\r\n');
-      fs.writeFileSync(path.join(shimDir, 'rustc.cmd'), '@echo off\r\nwsl rustc %*\r\n');
-      fs.writeFileSync(path.join(shimDir, 'rustup.cmd'), '@echo off\r\nwsl rustup %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'cargo.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" cargo %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'rustc.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" rustc %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'rustup.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" rustup %*\r\n');
       if (!extraPaths.includes(shimDir)) {
         extraPaths.unshift(shimDir);
       }
-      console.log('[ENV] Created WSL Cargo bridge shim for native Windows execution.');
+      console.log('[ENV] Created WSL Cargo bridge shim with directory mapping.');
     } catch (_) {}
   }
 
@@ -315,7 +315,26 @@ app.post('/api/convert', convertFields, async (req, res) => {
     const originalPkgJson = fs.existsSync(pkgJsonPath) ? fs.readFileSync(pkgJsonPath, 'utf8') : null;
 
     try {
-      const execCmd = `node ${buildCmdArgs.map(a => `"${a}"`).join(' ')}`;
+      let execCmd = `node ${buildCmdArgs.map(a => `"${a}"`).join(' ')}`;
+      const isWin = os.platform() === 'win32';
+      if (isWin) {
+        let hasWinCargo = false;
+        try {
+          execSync('where cargo', { stdio: 'ignore' });
+          hasWinCargo = true;
+        } catch (_) {}
+
+        if (!hasWinCargo) {
+          try {
+            execSync('wsl --version', { stdio: 'ignore' });
+            const wslPath = execSync(`wsl wslpath "${__dirname.replace(/\\/g, '/')}"`, { encoding: 'utf8' }).trim();
+            const wslArgs = buildCmdArgs.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+            execCmd = `wsl bash -c "cd '${wslPath}' && node build.js ${wslArgs}"`;
+            console.log(`[JOB ${jobId}] Native Windows Cargo absent. Auto-delegating build to WSL Node.`);
+          } catch (_) {}
+        }
+      }
+
       console.log(`[JOB ${jobId}] Executing: ${execCmd}`);
       execSync(execCmd, { cwd: __dirname, stdio: 'inherit', env: process.env });
     } finally {

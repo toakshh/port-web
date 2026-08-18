@@ -94,13 +94,13 @@ function ensureCargoEnv() {
       if (!fs.existsSync(shimDir)) {
         fs.mkdirSync(shimDir, { recursive: true });
       }
-      fs.writeFileSync(path.join(shimDir, 'cargo.cmd'), '@echo off\r\nwsl cargo %*\r\n');
-      fs.writeFileSync(path.join(shimDir, 'rustc.cmd'), '@echo off\r\nwsl rustc %*\r\n');
-      fs.writeFileSync(path.join(shimDir, 'rustup.cmd'), '@echo off\r\nwsl rustup %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'cargo.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" cargo %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'rustc.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" rustc %*\r\n');
+      fs.writeFileSync(path.join(shimDir, 'rustup.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" rustup %*\r\n');
       if (!extraPaths.includes(shimDir)) {
         extraPaths.unshift(shimDir);
       }
-      console.log('[ENV] Created WSL Cargo bridge shim for native Windows execution.');
+      console.log('[ENV] Created WSL Cargo bridge shim with directory mapping.');
     } catch (_) {}
   }
 
