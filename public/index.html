@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tripo Cloud - Web to Native App Converter</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div>
+          <h1>Tripo App Converter</h1>
+          <p class="tagline">Turn web application builds into native Android, Windows & macOS apps</p>
+        </div>
+      </div>
+      <div id="healthBadge" class="health-badge status-loading">
+        <span class="dot"></span>
+        <span id="healthStatusText">Checking API...</span>
+      </div>
+    </header>
+
+    <!-- Main Content Grid -->
+    <main class="main-content">
+      <!-- Converter Form Card -->
+      <section class="card form-card" id="formSection">
+        <form id="convertForm" enctype="multipart/form-data">
+          <!-- 1. Web App Build Upload -->
+          <div class="form-group">
+            <label class="form-label">
+              <span class="step-num">1</span> Web App Build (.zip)
+              <span class="required-star">*</span>
+            </label>
+            <div class="drop-zone" id="dropZone">
+              <input type="file" id="webBuild" name="webBuild" accept=".zip" required hidden />
+              <div class="drop-zone-content" id="dropZoneContent">
+                <div class="drop-icon">📦</div>
+                <p class="drop-title">Drag & drop your Web App ZIP build here</p>
+                <p class="drop-subtitle">or click to browse from your computer (zip containing index.html)</p>
+              </div>
+              <div class="file-info hidden" id="fileInfo">
+                <span class="file-icon">📄</span>
+                <span class="file-name" id="fileName">app-build.zip</span>
+                <span class="file-size" id="fileSize">2.4 MB</span>
+                <button type="button" class="btn-remove" id="btnRemoveFile" title="Remove file">&times;</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. Customization Details -->
+          <div class="form-group">
+            <label class="form-label">
+              <span class="step-num">2</span> App Details & Customization (Optional)
+            </label>
+            <div class="grid-2col">
+              <div class="input-field">
+                <label for="appName">App Name</label>
+                <input type="text" id="appName" name="appName" placeholder="e.g. My Cool App" />
+              </div>
+              <div class="input-field">
+                <label for="appIdentifier">App Identifier (Bundle ID)</label>
+                <input type="text" id="appIdentifier" name="appIdentifier" placeholder="e.g. com.example.myapp" />
+              </div>
+            </div>
+
+            <!-- Logo Upload & Preview -->
+            <div class="logo-upload-wrapper">
+              <label for="appLogo">App Logo / Icon (PNG/JPG)</label>
+              <div class="logo-picker-row">
+                <input type="file" id="appLogo" name="appLogo" accept="image/png,image/jpeg" hidden />
+                <button type="button" class="btn-secondary" id="btnBrowseLogo">
+                  🖼️ Select Logo
+                </button>
+                <div class="logo-preview-box" id="logoPreviewBox">
+                  <img id="logoPreviewImg" class="hidden" alt="Logo preview" />
+                  <span id="logoPlaceholder">No logo chosen</span>
+                </div>
+                <button type="button" class="btn-remove hidden" id="btnRemoveLogo" title="Remove logo">&times;</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. Target Platforms -->
+          <div class="form-group">
+            <label class="form-label">
+              <span class="step-num">3</span> Target Platforms
+            </label>
+            <div class="targets-grid">
+              <label class="target-card">
+                <input type="checkbox" name="targets" value="android" checked />
+                <div class="target-content">
+                  <span class="target-icon">🤖</span>
+                  <span class="target-name">Android APK</span>
+                  <span class="target-sub">Signed Debug APK</span>
+                </div>
+              </label>
+
+              <label class="target-card">
+                <input type="checkbox" name="targets" value="exe" checked />
+                <div class="target-content">
+                  <span class="target-icon">🪟</span>
+                  <span class="target-name">Windows EXE</span>
+                  <span class="target-sub">Executable & Setup</span>
+                </div>
+              </label>
+
+              <label class="target-card">
+                <input type="checkbox" name="targets" value="mac" />
+                <div class="target-content">
+                  <span class="target-icon">🍎</span>
+                  <span class="target-name">macOS DMG</span>
+                  <span class="target-sub">App Bundle & DMG</span>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <!-- Submit Button -->
+          <button type="submit" class="btn-primary" id="btnSubmit">
+            🚀 Convert Web App to Native Apps
+          </button>
+        </form>
+      </section>
+
+      <!-- Status / Progress Card (Hidden by default) -->
+      <section class="card status-card hidden" id="statusSection">
+        <div class="status-content">
+          <div class="spinner"></div>
+          <h2 id="statusTitle">Converting Web App...</h2>
+          <p id="statusSubtitle">Extracting web build, initializing Tauri environment, and generating native binaries.</p>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="progressBar"></div>
+          </div>
+          <div class="status-steps" id="statusSteps">
+            <div class="step-item step-active" id="stepUpload">1. Uploading web build & settings</div>
+            <div class="step-item" id="stepExtract">2. Extracting assets & configuring build</div>
+            <div class="step-item" id="stepCompile">3. Compiling native target packages</div>
+            <div class="step-item" id="stepFinalize">4. Signing & packaging output files</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Results & Download Card (Hidden by default) -->
+      <section class="card result-card hidden" id="resultSection">
+        <div class="result-header">
+          <div class="success-icon">🎉</div>
+          <h2>Conversion Complete!</h2>
+          <p>Your native app packages are ready for download.</p>
+
+          <div class="job-meta">
+            <span>Job ID: <strong id="resJobId">job_12345</strong></span>
+          </div>
+        </div>
+
+        <div class="download-section">
+          <!-- Primary All-in-One Download -->
+          <a id="dlZipBtn" class="dl-btn dl-zip-btn" href="#" download>
+            <span class="btn-icon">📦</span>
+            <div class="btn-text">
+              <span class="main-text">Download All Packages (ZIP)</span>
+              <span class="sub-text">Includes all compiled platform binaries</span>
+            </div>
+          </a>
+
+          <div class="individual-downloads" id="individualDownloads">
+            <a id="dlApkBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
+              <span class="btn-icon">🤖</span> Download Android APK
+            </a>
+            <a id="dlExeBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
+              <span class="btn-icon">🪟</span> Download Windows EXE / Setup
+            </a>
+            <a id="dlDmgBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
+              <span class="btn-icon">🍎</span> Download macOS DMG
+            </a>
+          </div>
+        </div>
+
+        <button type="button" class="btn-secondary btn-reset" id="btnConvertAnother">
+          🔄 Convert Another App
+        </button>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>Tripo Cloud Web-to-App Service &bull; Tauri & Express Powered Pipeline</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -2,6 +2,7 @@
 
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
+- **Cloud Web-to-App Converter Service**: Run `node server.js` or `npm start` (port 3000). Provides `POST /api/convert`, `GET /api/download/:jobId`, `GET /api/health`, and dashboard UI served at `GET /`.
 - **Unified multi-platform build pipeline**: Run `./build` or `npm run build -- <args>`.
   - `./build --android` : Builds signed Android APK at `dist-builds/android/tripo-app-signed.apk`.
   - `./build --exe` : Builds Windows `.exe` executable & installer at `dist-builds/windows/`.

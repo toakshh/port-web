@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "node build.js",
+    "start": "node server.js",
     "tauri": "tauri",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -14,5 +15,11 @@
   "type": "commonjs",
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "multer": "^2.2.0"
   }
 }
