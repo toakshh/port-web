@@ -1,0 +1,67 @@
+version: 2.1
+
+orbs:
+  android: circleci/android@2.4.0
+  win: circleci/windows@5.0.0
+
+jobs:
+  build-android:
+    executor:
+      name: android/ubuntu-2204-cimg
+      tag: 2024.04.1
+    environment:
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+    steps:
+      - checkout
+      - run:
+          name: Install Node.js & Dependencies
+          command: |
+            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+            sudo apt-get install -y nodejs build-essential libssl-dev pkg-config zipalign
+            npm ci
+      - run:
+          name: Install Rust Toolchain & Android Targets
+          command: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source "$HOME/.cargo/env"
+            rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+      - run:
+          name: Build Signed Android APK
+          command: |
+            source "$HOME/.cargo/env"
+            node build.js --android
+      - store_artifacts:
+          path: dist-builds/android/tripo-app-signed.apk
+          destination: android/tripo-app-signed.apk
+
+  build-windows:
+    executor:
+      name: win/server-2022
+      size: medium
+    steps:
+      - checkout
+      - run:
+          name: Install Node.js
+          command: nvm install 20.11.0; nvm use 20.11.0
+      - run:
+          name: Install Rust
+          command: |
+            choco install rustup.active -y
+            rustup target add x86_64-pc-windows-msvc
+      - run:
+          name: Build Windows Application
+          command: |
+            npm ci
+            node build.js --exe
+      - store_artifacts:
+          path: dist-builds/windows/app.exe
+          destination: windows/app.exe
+      - store_artifacts:
+          path: dist-builds/windows/tripo-setup.exe
+          destination: windows/tripo-setup.exe
+
+workflows:
+  build-all-platforms:
+    jobs:
+      - build-android
+      - build-windows
