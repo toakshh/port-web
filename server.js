@@ -58,11 +58,12 @@ function copyRecursiveSync(src, dest) {
   }
 }
 
-// Helper: Flatten extracted ZIP if single root folder exists without index.html at root
+// Helper: Flatten extracted ZIP recursively if root contains single subfolder or index.html is nested
 function normalizeZipExtraction(dir) {
   if (!fs.existsSync(dir)) return;
-  const items = fs.readdirSync(dir);
-  if (!fs.existsSync(path.join(dir, 'index.html')) && items.length === 1) {
+  
+  let items = fs.readdirSync(dir);
+  while (!fs.existsSync(path.join(dir, 'index.html')) && items.length === 1) {
     const singleFolder = path.join(dir, items[0]);
     if (fs.existsSync(singleFolder) && fs.statSync(singleFolder).isDirectory()) {
       const subItems = fs.readdirSync(singleFolder);
@@ -70,6 +71,36 @@ function normalizeZipExtraction(dir) {
         fs.renameSync(path.join(singleFolder, item), path.join(dir, item));
       }
       fs.rmdirSync(singleFolder);
+      items = fs.readdirSync(dir);
+    } else {
+      break;
+    }
+  }
+
+  // Deep search fallback if index.html is still missing at root
+  if (!fs.existsSync(path.join(dir, 'index.html'))) {
+    let indexHtmlParent = null;
+    function findIndexHtml(currentDir) {
+      if (!fs.existsSync(currentDir)) return;
+      const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(currentDir, entry.name);
+        if (entry.isFile() && entry.name.toLowerCase() === 'index.html') {
+          indexHtmlParent = currentDir;
+          return;
+        } else if (entry.isDirectory()) {
+          findIndexHtml(fullPath);
+          if (indexHtmlParent) return;
+        }
+      }
+    }
+    findIndexHtml(dir);
+    if (indexHtmlParent && indexHtmlParent !== dir) {
+      console.log(`[ZIP RE-NORMALIZATION] Relocating web build root from ${indexHtmlParent} to ${dir}`);
+      const itemsToMove = fs.readdirSync(indexHtmlParent);
+      for (const item of itemsToMove) {
+        fs.renameSync(path.join(indexHtmlParent, item), path.join(dir, item));
+      }
     }
   }
 }

@@ -207,44 +207,63 @@ if (customLogo) {
   logSuccess('Generated icon suite in src-tauri/icons/');
 }
 
-// Helper to copy directory recursively
-function copyDir(src, dest) {
-  if (!fs.existsSync(src)) return;
-  fs.mkdirSync(dest, { recursive: true });
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      copyDir(srcPath, destPath);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
+// Helper: Ensure Rust toolchain target is installed
+function ensureRustTarget(target) {
+  try {
+    const stdout = execSync('rustup target list', { encoding: 'utf8', env: process.env });
+    if (!stdout.includes(`${target} (installed)`)) {
+      log(`Auto-installing missing Rust target: ${target}...`);
+      execSync(`rustup target add ${target}`, { stdio: 'inherit', env: process.env });
+      logSuccess(`Installed Rust target: ${target}`);
+    }
+  } catch (err) {
+    logWarn(`Could not auto-install Rust target ${target}: ${err.message}`);
+  }
+}
+
+// Helper: Patch generated Android BuildTask.kt
+function patchBuildTaskKt() {
+  const buildTaskPath = path.join(rootDir, 'src-tauri', 'gen', 'android', 'buildSrc', 'src', 'main', 'java', 'com', 'tripo', 'app', 'kotlin', 'BuildTask.kt');
+  if (fs.existsSync(buildTaskPath)) {
+    try {
+      let content = fs.readFileSync(buildTaskPath, 'utf8');
+      if (!content.includes('val executable = if (Os.isFamily(Os.FAMILY_WINDOWS)) "npx.cmd" else "npx";')) {
+        content = content.replace(
+          /val executable = .*?;/g,
+          'val executable = if (Os.isFamily(Os.FAMILY_WINDOWS)) "npx.cmd" else "npx";'
+        );
+        fs.writeFileSync(buildTaskPath, content, 'utf8');
+        logSuccess('Patched Android BuildTask.kt for cross-platform execution');
+      }
+    } catch (e) {
+      logWarn(`Failed to patch BuildTask.kt: ${e.message}`);
     }
   }
 }
 
-// 4. Build Targets
+let successfulBuilds = 0;
 
 // Android
 if (buildAndroid) {
   log('Starting Android build...');
-  if (customIdentifier) {
-    log('Re-initializing Android project for updated identifier...');
-    const genAndroidDir = path.join(rootDir, 'src-tauri', 'gen', 'android');
-    if (fs.existsSync(genAndroidDir)) {
-      fs.rmSync(genAndroidDir, { recursive: true, force: true });
-    }
-    runCmd(`${getTauriCmd()} android init`);
+  ensureRustTarget('aarch64-linux-android');
+  ensureRustTarget('armv7-linux-androideabi');
+  ensureRustTarget('i686-linux-android');
+  ensureRustTarget('x86_64-linux-android');
+
+  const genAndroidDir = path.join(rootDir, 'src-tauri', 'gen', 'android');
+  if (!fs.existsSync(genAndroidDir)) {
+    log('Initializing Android Studio project...');
+    runCmd(`${getTauriCmd()} android init --ci`, { allowFailure: true });
   }
+  patchBuildTaskKt();
 
   let buildSuccess = runCmd(`${getTauriCmd()} android build --apk`, { allowFailure: true });
   if (!buildSuccess) {
-    logWarn('Android build failed. Attempting clean re-init of gen/android...');
-    const genAndroidDir = path.join(rootDir, 'src-tauri', 'gen', 'android');
-    if (fs.existsSync(genAndroidDir)) {
-      fs.rmSync(genAndroidDir, { recursive: true, force: true });
-    }
-    runCmd(`${getTauriCmd()} android init`);
-    runCmd(`${getTauriCmd()} android build --apk`);
+    logWarn('Android build failed on first attempt. Retrying with init update...');
+    runCmd(`${getTauriCmd()} android init --ci`, { allowFailure: true });
+    patchBuildTaskKt();
+    buildSuccess = runCmd(`${getTauriCmd()} android build --apk`, { allowFailure: true });
   }
 
   const apkDir = path.join(rootDir, 'src-tauri', 'gen', 'android', 'app', 'build', 'outputs', 'apk');
@@ -264,50 +283,58 @@ if (buildAndroid) {
 
   findApk(apkDir);
 
-  if (!foundApk) {
-    logError('Could not locate generated APK file.');
-    process.exit(1);
+  if (foundApk) {
+    log(`Unsigned APK built at: ${foundApk}`);
+
+    const homeDir = os.homedir();
+    const androidDir = path.join(homeDir, '.android');
+    const keystorePath = path.join(androidDir, 'debug.keystore');
+
+    if (!fs.existsSync(keystorePath)) {
+      log('Generating debug keystore...');
+      fs.mkdirSync(androidDir, { recursive: true });
+      runCmd(`keytool -genkeypair -v -keystore "${keystorePath}" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"`, { allowFailure: true });
+    }
+
+    const alignedApk = path.join(distBuildsDir, 'android', 'aligned-temp.apk');
+    const signedApk = path.join(distBuildsDir, 'android', 'tripo-app-signed.apk');
+
+    log('Running zipalign...');
+    const alignSuccess = runCmd(`zipalign -f -v 4 "${foundApk}" "${alignedApk}"`, { allowFailure: true });
+
+    if (alignSuccess && fs.existsSync(alignedApk)) {
+      log('Running apksigner...');
+      const signSuccess = runCmd(`apksigner sign --ks "${keystorePath}" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "${signedApk}" "${alignedApk}"`, { allowFailure: true });
+
+      if (fs.existsSync(alignedApk)) {
+        fs.unlinkSync(alignedApk);
+      }
+
+      if (signSuccess && fs.existsSync(signedApk)) {
+        log('Verifying signed APK...');
+        runCmd(`apksigner verify "${signedApk}"`, { allowFailure: true });
+        logSuccess(`Android build completed: ${signedApk}`);
+        successfulBuilds++;
+      } else {
+        logWarn('APK signing failed.');
+      }
+    } else {
+      logWarn('APK zipalign failed.');
+    }
+  } else {
+    logWarn('Could not locate generated APK file.');
   }
-
-  log(`Unsigned APK built at: ${foundApk}`);
-
-  // Ensure Keystore
-  const homeDir = os.homedir();
-  const androidDir = path.join(homeDir, '.android');
-  const keystorePath = path.join(androidDir, 'debug.keystore');
-
-  if (!fs.existsSync(keystorePath)) {
-    log('Generating debug keystore...');
-    fs.mkdirSync(androidDir, { recursive: true });
-    runCmd(`keytool -genkeypair -v -keystore "${keystorePath}" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"`);
-  }
-
-  const alignedApk = path.join(distBuildsDir, 'android', 'aligned-temp.apk');
-  const signedApk = path.join(distBuildsDir, 'android', 'tripo-app-signed.apk');
-
-  log('Running zipalign...');
-  runCmd(`zipalign -f -v 4 "${foundApk}" "${alignedApk}"`);
-
-  log('Running apksigner...');
-  runCmd(`apksigner sign --ks "${keystorePath}" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out "${signedApk}" "${alignedApk}"`);
-
-  if (fs.existsSync(alignedApk)) {
-    fs.unlinkSync(alignedApk);
-  }
-
-  log('Verifying signed APK...');
-  runCmd(`apksigner verify "${signedApk}"`);
-
-  logSuccess(`Android build completed: ${signedApk}`);
 }
 
 // Windows (.exe)
 if (buildExe) {
   log('Starting Windows (.exe) build...');
+  let exeSuccess = false;
   if (isWin) {
-    runCmd(`${getTauriCmd()} build`);
+    exeSuccess = runCmd(`${getTauriCmd()} build`, { allowFailure: true });
   } else {
-    runCmd(`${getTauriCmd()} build --target x86_64-pc-windows-gnu`);
+    ensureRustTarget('x86_64-pc-windows-gnu');
+    exeSuccess = runCmd(`${getTauriCmd()} build --target x86_64-pc-windows-gnu`, { allowFailure: true });
   }
 
   const possibleReleaseDirs = [
@@ -336,34 +363,34 @@ if (buildExe) {
     if (exeFound) break;
   }
 
-  if (!exeFound) {
-    logError('Windows .exe binary not found in release directory.');
-    process.exit(1);
-  }
-
-  // Copy installer tripo-setup.exe
-  let setupFound = false;
-  for (const releaseDir of possibleReleaseDirs) {
-    const nsisDir = path.join(releaseDir, 'bundle', 'nsis');
-    if (fs.existsSync(nsisDir)) {
-      for (const file of fs.readdirSync(nsisDir)) {
-        if (file.endsWith('.exe')) {
-          const srcSetup = path.join(nsisDir, file);
-          const destSetup = path.join(destWinDir, 'tripo-setup.exe');
-          fs.copyFileSync(srcSetup, destSetup);
-          setupFound = true;
-          logSuccess(`Copied setup installer to ${destSetup}`);
-          break;
+  if (exeFound) {
+    successfulBuilds++;
+    // Copy installer tripo-setup.exe if available
+    let setupFound = false;
+    for (const releaseDir of possibleReleaseDirs) {
+      const nsisDir = path.join(releaseDir, 'bundle', 'nsis');
+      if (fs.existsSync(nsisDir)) {
+        for (const file of fs.readdirSync(nsisDir)) {
+          if (file.endsWith('.exe')) {
+            const srcSetup = path.join(nsisDir, file);
+            const destSetup = path.join(destWinDir, 'tripo-setup.exe');
+            fs.copyFileSync(srcSetup, destSetup);
+            setupFound = true;
+            logSuccess(`Copied setup installer to ${destSetup}`);
+            break;
+          }
         }
       }
+      if (setupFound) break;
     }
-    if (setupFound) break;
-  }
 
-  if (!setupFound) {
-    logWarn('NSIS setup executable not found in bundle directory.');
+    if (!setupFound) {
+      logWarn('NSIS setup executable not found in bundle directory.');
+    } else {
+      logSuccess(`Windows build completed: ${destWinDir}`);
+    }
   } else {
-    logSuccess(`Windows build completed: ${destWinDir}`);
+    logWarn('Windows .exe binary not found or build failed on this host OS.');
   }
 }
 
@@ -379,6 +406,7 @@ if (buildMac) {
       copyDir(bundleDir, destMacDir);
     }
     logSuccess(`macOS build completed: ${destMacDir}`);
+    successfulBuilds++;
   } else {
     logWarn('macOS build failed or is unsupported on this host operating system.');
   }
@@ -399,9 +427,15 @@ if (buildIos) {
       copyDir(iosBundleDir, destIosDir);
     }
     logSuccess(`iOS build completed: ${destIosDir}`);
+    successfulBuilds++;
   } else {
     logWarn('iOS build failed or is unsupported on this host operating system.');
   }
 }
 
-logSuccess('Build process finished successfully!');
+if (successfulBuilds > 0) {
+  logSuccess(`Build process finished with ${successfulBuilds} target(s) successfully created!`);
+} else {
+  logError('All specified build targets failed.');
+  process.exit(1);
+}
