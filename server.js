@@ -107,8 +107,11 @@ function normalizeZipExtraction(dir) {
 
 // Helper: Ensure environment variables for Tauri/Android builds
 function setupEnv() {
-  const JDK_DIR = '/home/akshh16/jdk';
-  const ANDROID_SDK_DIR = '/home/akshh16/android-sdk';
+  const homeDir = os.homedir();
+  const isWin = os.platform() === 'win32';
+
+  const JDK_DIR = process.env.JAVA_HOME || (isWin ? path.join(homeDir, 'jdk') : '/home/akshh16/jdk');
+  const ANDROID_SDK_DIR = process.env.ANDROID_HOME || (isWin ? path.join(homeDir, 'AppData', 'Local', 'Android', 'Sdk') : '/home/akshh16/android-sdk');
 
   if (!process.env.JAVA_HOME && fs.existsSync(JDK_DIR)) {
     process.env.JAVA_HOME = JDK_DIR;
@@ -117,7 +120,36 @@ function setupEnv() {
     process.env.ANDROID_HOME = ANDROID_SDK_DIR;
   }
 
+  const cargoCandidates = [
+    process.env.CARGO_HOME ? path.join(process.env.CARGO_HOME, 'bin') : null,
+    path.join(homeDir, '.cargo', 'bin'),
+    process.env.USERPROFILE ? path.join(process.env.USERPROFILE, '.cargo', 'bin') : null,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, '.cargo', 'bin') : null,
+    '/home/akshh16/.cargo/bin',
+    '/root/.cargo/bin',
+    'C:\\Users\\Aksh\\.cargo\\bin',
+    'C:\\.cargo\\bin',
+    'C:\\Program Files\\Rust\\bin'
+  ].filter(Boolean);
+
   const extraPaths = [];
+  for (const cp of cargoCandidates) {
+    if (fs.existsSync(cp) && !extraPaths.includes(cp)) {
+      extraPaths.push(cp);
+    }
+  }
+
+  try {
+    const checkCmd = isWin ? 'where cargo' : 'which cargo';
+    const foundCargo = execSync(checkCmd, { encoding: 'utf8', env: process.env }).trim().split(/[\r\n]+/)[0];
+    if (foundCargo && fs.existsSync(foundCargo)) {
+      const cargoBinDir = path.dirname(foundCargo.trim());
+      if (!extraPaths.includes(cargoBinDir)) {
+        extraPaths.push(cargoBinDir);
+      }
+    }
+  } catch (_) {}
+
   if (process.env.JAVA_HOME) {
     extraPaths.push(path.join(process.env.JAVA_HOME, 'bin'));
   }

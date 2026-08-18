@@ -51,8 +51,28 @@ function runCmd(cmd, opts = {}) {
 const homeDir = os.homedir();
 const isWin = os.platform() === 'win32';
 
-// Detect Cargo binary path
-const cargoBinDir = path.join(homeDir, '.cargo', 'bin');
+// Detect Cargo binary paths across Windows and Linux
+function getCargoPaths() {
+  const candidates = [
+    process.env.CARGO_HOME ? path.join(process.env.CARGO_HOME, 'bin') : null,
+    path.join(homeDir, '.cargo', 'bin'),
+    process.env.USERPROFILE ? path.join(process.env.USERPROFILE, '.cargo', 'bin') : null,
+    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, '.cargo', 'bin') : null,
+    '/home/akshh16/.cargo/bin',
+    '/root/.cargo/bin',
+    'C:\\Users\\Aksh\\.cargo\\bin',
+    'C:\\.cargo\\bin',
+    'C:\\Program Files\\Rust\\bin'
+  ].filter(Boolean);
+
+  const validPaths = [];
+  for (const p of candidates) {
+    if (fs.existsSync(p) && !validPaths.includes(p)) {
+      validPaths.push(p);
+    }
+  }
+  return validPaths;
+}
 
 // Detect JDK and Android SDK paths across Linux / Windows
 const JDK_DIR = process.env.JAVA_HOME || (isWin ? path.join(homeDir, 'jdk') : '/home/akshh16/jdk');
@@ -65,10 +85,20 @@ if (!process.env.ANDROID_HOME && fs.existsSync(ANDROID_SDK_DIR)) {
   process.env.ANDROID_HOME = ANDROID_SDK_DIR;
 }
 
-const extraPaths = [];
-if (fs.existsSync(cargoBinDir)) {
-  extraPaths.push(cargoBinDir);
-}
+const extraPaths = [...getCargoPaths()];
+
+// Try locating cargo via system command if not found yet
+try {
+  const checkCmd = isWin ? 'where cargo' : 'which cargo';
+  const foundCargo = execSync(checkCmd, { encoding: 'utf8', env: process.env }).trim().split(/[\r\n]+/)[0];
+  if (foundCargo && fs.existsSync(foundCargo)) {
+    const cargoBinDir = path.dirname(foundCargo.trim());
+    if (!extraPaths.includes(cargoBinDir)) {
+      extraPaths.push(cargoBinDir);
+    }
+  }
+} catch (_) {}
+
 if (process.env.JAVA_HOME) {
   extraPaths.push(path.join(process.env.JAVA_HOME, 'bin'));
 }
