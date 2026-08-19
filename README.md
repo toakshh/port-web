@@ -167,8 +167,15 @@ instead of producing a mislabelled binary.
 | `targets` | no | Comma-separated: `android,exe,mac,ios` (default `android,exe`) |
 | `mode` | no | `fast` (default) or `clean` |
 
-Builds run in a background queue, one at a time, because they share a single Rust target cache and
-one generated Android project. The upload request returns immediately; poll the job for progress.
+Builds run in a background queue. Up to `BUILD_CONCURRENCY` of them run at once (default 2), each in
+its own isolated slot, so simultaneous users can never overwrite each other's files. The upload
+request returns immediately; poll the job for progress.
+
+Stop a build from the command line:
+
+```bash
+npm run jobs -- cancel <jobId>
+```
 
 ```bash
 # queue a job
@@ -254,6 +261,7 @@ and any other client all show the same number instead of each animating its own 
 | `HOST` | `0.0.0.0` | Bind address |
 | `MAX_UPLOAD_MB` | `500` | Upload size limit |
 | `JOB_RETENTION` | `20` | Finished jobs kept on disk |
+| `BUILD_CONCURRENCY` | `2` | How many builds run at once, each in its own slot |
 | `BASELINE_DIST` | `./dist` | Baseline web build |
 | `BUILD_WORKSPACE` | `./.build-workspace` | Scratch area Tauri compiles from |
 | `DIST_BUILDS`, `JOBS_DIR`, `UPLOADS_DIR` | `./dist-builds`, `./jobs`, `./uploads` | Output/state |
@@ -322,9 +330,11 @@ lib/toolchain.js         JDK / Android SDK / NDK / Rust / Tauri CLI discovery
 lib/ensure-deps.js       Installs missing npm packages before first use
 lib/fsx.js               Incremental sync, safe ZIP extraction
 lib/estimate.js          Build-duration history and time estimates
+lib/slots.js             Isolated project directories for concurrent builds
 lib/wsl.js               Optional Windows -> WSL build delegation
 scripts/setup.js         Toolchain installer (the setup launchers call this)
 scripts/doctor.js        Environment report
+scripts/jobs.js          List / follow / cancel builds on the service
 scripts/selftest.js      Test suite
 public/                  Dashboard
 dist/                    Baseline web build (the shared "common file data")

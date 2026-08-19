@@ -31,6 +31,7 @@ const P = require('./lib/paths');
 const fsx = require('./lib/fsx');
 const tc = require('./lib/toolchain');
 const wsl = require('./lib/wsl');
+const slots = require('./lib/slots');
 
 /* ------------------------------------------------------------------ *
  * Logging
@@ -99,6 +100,9 @@ Speed:
 
 Other:
   --out <dir>            Artifact output directory (default: dist-builds/)
+  --slot <id>            Build in an isolated slot, so concurrent builds cannot
+                         overwrite each other's files. The server sets this;
+                         a plain command-line build does not need it.
   --no-wsl               Never delegate a Windows build to WSL
   --help, -h             Show this message
 `);
@@ -123,6 +127,7 @@ function parseArgs(argv) {
     identifier: null,
     out: P.DIST_BUILDS,
     allowWsl: true,
+    slot: null,
     installer: true,
     bundles: null,
     abis: null
@@ -163,6 +168,7 @@ function parseArgs(argv) {
       case '--identifier': opts.identifier = needsValue(i, arg); i++; break;
       case '--out': opts.out = path.resolve(needsValue(i, arg)); i++; break;
       case '--no-wsl': opts.allowWsl = false; break;
+      case '--slot': opts.slot = needsValue(i, arg); i++; break;
       case '--no-installer':
       case '--no-bundle': opts.installer = false; break;
       case '--bundles': opts.bundles = splitList(needsValue(i, arg)); i++; break;
@@ -240,6 +246,28 @@ const tauriCmd = (...args) => {
 };
 
 /* ------------------------------------------------------------------ *
+ * Project context (repository, or an isolated build slot)
+ * ------------------------------------------------------------------ */
+
+/**
+ * `--slot <id>` runs the build in its own project directory so that concurrent
+ * jobs cannot overwrite each other's staged assets or generated Android
+ * project. Without it, the build runs directly from the repository, which is
+ * what a plain command-line build should do.
+ */
+const ctx = opts.slot ? slots.prepareSlot(opts.slot) : slots.repoContext();
+
+if (opts.slot) log(`Build slot ${opts.slot}: ${ctx.projectDir}`);
+
+// The Rust target directory is shared by every slot on purpose: cargo locks it,
+// so concurrent compiles serialise instead of corrupting, and each slot starts
+// from the same warm dependency cache rather than a cold multi-minute build.
+process.env.CARGO_TARGET_DIR = ctx.targetDir;
+
+/** Tauri always runs with the project directory as its working directory. */
+const runTauri = (...args) => tc.run(tauriCmd(...args), { cwd: ctx.projectDir });
+
+/* ------------------------------------------------------------------ *
  * Web asset staging (the fast / clean distinction)
  * ------------------------------------------------------------------ */
 
@@ -265,20 +293,20 @@ function stageWebAssets() {
 
   if (opts.mode === 'clean' && source) {
     log(`Clean mode: staging the complete uploaded web build.`);
-    const stats = fsx.syncDir(source, P.WORKSPACE_DIST);
+    const stats = fsx.syncDir(source, ctx.distDir);
     log(`Staged ${stats.copied} changed file(s), ${stats.skipped} unchanged, ${stats.removed} removed.`);
     return { swappedOnly: false };
   }
 
   // Both fast mode and plain CLI builds start from the committed baseline.
   log(`Staging baseline web build from ${P.BASELINE_DIST}`);
-  const baseStats = fsx.syncDir(P.BASELINE_DIST, P.WORKSPACE_DIST);
+  const baseStats = fsx.syncDir(P.BASELINE_DIST, ctx.distDir);
   log(`Baseline: ${baseStats.copied} changed file(s), ${baseStats.skipped} unchanged, ${baseStats.removed} removed.`);
 
   if (!source) return { swappedOnly: false };
 
   const swapFrom = path.join(source, P.SWAP_SUBPATH);
-  const swapTo = path.join(P.WORKSPACE_DIST, P.SWAP_SUBPATH);
+  const swapTo = path.join(ctx.distDir, P.SWAP_SUBPATH);
   if (!fsx.isDir(swapFrom)) {
     logError(`Fast mode requires "${P.SWAP_SUBPATH}" inside the uploaded build, but it is missing.`);
     logError('Upload a build that contains it, or use clean mode to rebuild from the full upload.');
@@ -297,7 +325,7 @@ function stageWebAssets() {
 function promoteBaseline() {
   if (opts.mode !== 'clean' || !opts.webSrc) return;
   log('Clean mode: updating the committed baseline with this build\'s web assets...');
-  const stats = fsx.syncDir(P.WORKSPACE_DIST, P.BASELINE_DIST);
+  const stats = fsx.syncDir(ctx.distDir, P.BASELINE_DIST);
   logSuccess(
     `Baseline updated (${stats.copied} changed, ${stats.skipped} unchanged, ${stats.removed} removed) - ` +
       'future fast builds now start from these files.'
@@ -358,9 +386,9 @@ function generateIcons() {
     process.exit(1);
   }
 
-  const outDir = fsx.emptyDir(P.WORKSPACE_ICONS);
+  const outDir = fsx.emptyDir(ctx.iconsDir);
   log(`Generating icon set from ${opts.logo}`);
-  const res = tc.run(tauriCmd('icon', opts.logo, '-o', outDir));
+  const res = runTauri('icon', opts.logo, '-o', outDir);
   if (!res.ok) {
     logWarn('Icon generation failed - continuing with the default icon set.');
     return null;
@@ -369,7 +397,7 @@ function generateIcons() {
   const wanted = ['32x32.png', '128x128.png', '128x128@2x.png', 'icon.icns', 'icon.ico'];
   const produced = wanted
     .filter((name) => fsx.isFile(path.join(outDir, name)))
-    .map((name) => path.relative(P.SRC_TAURI, path.join(outDir, name)).split(path.sep).join('/'));
+    .map((name) => path.relative(ctx.srcTauri, path.join(outDir, name)).split(path.sep).join('/'));
 
   if (produced.length === 0) {
     logWarn('Icon generation produced no usable files - keeping the default icon set.');
@@ -385,7 +413,7 @@ function generateIcons() {
 
 /** The identifier baked into the generated Android project, if any. */
 function generatedAndroidIdentifier() {
-  const gradle = path.join(P.GEN_ANDROID, 'app', 'build.gradle.kts');
+  const gradle = path.join(ctx.genAndroid, 'app', 'build.gradle.kts');
   if (!fsx.isFile(gradle)) return null;
   const match = fs.readFileSync(gradle, 'utf8').match(/namespace\s*=\s*"([^"]+)"/);
   return match ? match[1] : null;
@@ -398,7 +426,7 @@ function generatedAndroidIdentifier() {
  * identifier produced.
  */
 function patchBuildTaskKt() {
-  const kotlinRoot = path.join(P.GEN_ANDROID, 'buildSrc', 'src', 'main', 'java');
+  const kotlinRoot = path.join(ctx.genAndroid, 'buildSrc', 'src', 'main', 'java');
   const targets = fsx.walkFiles(kotlinRoot).filter((f) => path.basename(f) === 'BuildTask.kt');
   const replacement = 'val executable = if (Os.isFamily(Os.FAMILY_WINDOWS)) "npx.cmd" else "npx";';
 
@@ -499,7 +527,7 @@ const ABI_JNI_DIRS = {
  * follow each other in any order.
  */
 function pruneAndroidJniLibs(abis) {
-  const jniRoot = path.join(P.GEN_ANDROID, 'app', 'src', 'main', 'jniLibs');
+  const jniRoot = path.join(ctx.genAndroid, 'app', 'src', 'main', 'jniLibs');
   if (!fsx.isDir(jniRoot)) return;
 
   const keep = new Set(abis.map((abi) => ABI_JNI_DIRS[abi]).filter(Boolean));
@@ -566,15 +594,15 @@ function ensureDebugKeystore() {
 
 if (opts.mode === 'clean') {
   log('Clean mode: purging the Rust build cache...');
-  fsx.rmrf(P.TAURI_TARGET);
-} else if (!fsx.isDir(P.TAURI_TARGET)) {
+  fsx.rmrf(ctx.targetDir);
+} else if (!fsx.isDir(ctx.targetDir)) {
   log('No compilation cache yet - this first build will take as long as a clean one.');
 }
 
 timed('stage web assets', stageWebAssets);
 
-if (!fsx.isFile(path.join(P.WORKSPACE_DIST, 'index.html'))) {
-  logError(`Staged web build has no index.html at ${P.WORKSPACE_DIST}`);
+if (!fsx.isFile(path.join(ctx.distDir, 'index.html'))) {
+  logError(`Staged web build has no index.html at ${ctx.distDir}`);
   process.exit(1);
 }
 
@@ -660,7 +688,7 @@ if (opts.android) {
     const wantedId = opts.identifier || null;
     const currentId = generatedAndroidIdentifier();
     const needsInit =
-      !fsx.isDir(P.GEN_ANDROID) || (wantedId && currentId && wantedId !== currentId);
+      !fsx.isDir(ctx.genAndroid) || (wantedId && currentId && wantedId !== currentId);
 
     if (needsInit) {
       if (currentId && wantedId && currentId !== wantedId) {
@@ -668,25 +696,25 @@ if (opts.android) {
       } else {
         log('Initializing the Android project...');
       }
-      tc.run(tauriCmd('android', 'init', '--ci', ...cfg));
+      runTauri('android', 'init', '--ci', ...cfg);
     }
     patchBuildTaskKt();
     pruneAndroidJniLibs(abis);
 
     let ok = timed('android compile + package', () =>
-      tc.run(tauriCmd('android', 'build', '--apk', ...abiArgs, ...cfg)).ok
+      runTauri('android', 'build', '--apk', ...abiArgs, ...cfg).ok
     );
     if (!ok) {
       logWarn('Android build failed - re-running the project generator and retrying once...');
-      tc.run(tauriCmd('android', 'init', '--ci', ...cfg));
+      runTauri('android', 'init', '--ci', ...cfg);
       patchBuildTaskKt();
       pruneAndroidJniLibs(abis);
       ok = timed('android compile + package (retry)', () =>
-        tc.run(tauriCmd('android', 'build', '--apk', ...abiArgs, ...cfg)).ok
+        runTauri('android', 'build', '--apk', ...abiArgs, ...cfg).ok
       );
     }
 
-    const apkRoot = path.join(P.GEN_ANDROID, 'app', 'build', 'outputs', 'apk');
+    const apkRoot = path.join(ctx.genAndroid, 'app', 'build', 'outputs', 'apk');
     const unsigned = ok
       ? findFreshFile(apkRoot, (name) => name.endsWith('.apk') && !name.endsWith('-signed.apk'), true)
       : null;
@@ -761,15 +789,15 @@ if (opts.exe) {
 
   buildArgs.push(...cfg);
 
-  const ok = timed('windows compile + bundle', () => tc.run(tauriCmd(...buildArgs)).ok);
+  const ok = timed('windows compile + bundle', () => runTauri(...buildArgs).ok);
   if (!ok) {
     failures.push('windows: the Tauri build command failed');
   } else {
     const releaseDirs = [
-      path.join(P.TAURI_TARGET, 'release'),
-      path.join(P.TAURI_TARGET, 'x86_64-pc-windows-msvc', 'release'),
-      path.join(P.TAURI_TARGET, 'x86_64-pc-windows-gnu', 'release'),
-      path.join(P.TAURI_TARGET, 'aarch64-pc-windows-msvc', 'release')
+      path.join(ctx.targetDir, 'release'),
+      path.join(ctx.targetDir, 'x86_64-pc-windows-msvc', 'release'),
+      path.join(ctx.targetDir, 'x86_64-pc-windows-gnu', 'release'),
+      path.join(ctx.targetDir, 'aarch64-pc-windows-msvc', 'release')
     ].filter(fsx.isDir);
 
     let exe = null;
@@ -812,8 +840,8 @@ if (opts.exe) {
 
 if (opts.mac) {
   log('=== macOS ===');
-  const ok = tc.run(tauriCmd('build', ...cfg)).ok;
-  const bundleDir = path.join(P.TAURI_TARGET, 'release', 'bundle');
+  const ok = runTauri('build', ...cfg).ok;
+  const bundleDir = path.join(ctx.targetDir, 'release', 'bundle');
   if (ok && fsx.isDir(bundleDir)) {
     const destMac = path.join(outDir, 'mac');
     for (const sub of ['dmg', 'macos']) {
@@ -836,10 +864,10 @@ if (opts.mac) {
 
 if (opts.ios) {
   log('=== iOS ===');
-  let ok = tc.run(tauriCmd('ios', 'build', ...cfg)).ok;
+  let ok = runTauri('ios', 'build', ...cfg).ok;
   if (!ok) {
-    tc.run(tauriCmd('ios', 'init', '--ci', ...cfg));
-    ok = tc.run(tauriCmd('ios', 'build', ...cfg)).ok;
+    runTauri('ios', 'init', '--ci', ...cfg);
+    ok = runTauri('ios', 'build', ...cfg).ok;
   }
   const iosBuildDir = path.join(P.ROOT, 'src-tauri', 'gen', 'apple', 'build');
   if (ok && fsx.hasFiles(iosBuildDir)) {

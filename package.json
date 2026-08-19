@@ -19,7 +19,9 @@
     "build:all": "node build.js --all",
     "doctor": "node scripts/doctor.js",
     "test": "node scripts/selftest.js",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "jobs": "node scripts/jobs.js",
+    "cancel": "node scripts/jobs.js cancel"
   },
   "keywords": [
     "tauri",

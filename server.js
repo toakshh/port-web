@@ -8,8 +8,8 @@
  *
  * Design notes:
  *  - Builds run asynchronously; the HTTP request never blocks on compilation.
- *  - Builds are serialised, because they share one Rust target cache and one
- *    generated Android project.
+ *  - Up to BUILD_CONCURRENCY builds run at once, each in its own isolated slot,
+ *    so simultaneous users can never overwrite each other's files.
  *  - The committed baseline in dist/ is never destroyed by a job. Fast jobs
  *    read it, clean jobs update it (that is exactly what "clean" means here).
  */
@@ -31,12 +31,15 @@ const P = require('./lib/paths');
 const fsx = require('./lib/fsx');
 const tc = require('./lib/toolchain');
 const est = require('./lib/estimate');
+const slots = require('./lib/slots');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB) || 500;
 const JOB_RETENTION = Number(process.env.JOB_RETENTION) || 20;
 const LOG_TAIL_LINES = 400;
+// How many builds may run at once. Each gets its own isolated slot.
+const BUILD_CONCURRENCY = Math.max(1, Number(process.env.BUILD_CONCURRENCY) || 2);
 
 for (const dir of [P.UPLOADS, P.JOBS, P.DIST_BUILDS, P.WORKSPACE]) fsx.ensureDir(dir);
 
@@ -140,30 +143,55 @@ const upload = multer({
 });
 
 /* ------------------------------------------------------------------ *
- * Build queue (serialised - builds share one Rust target cache)
- * ------------------------------------------------------------------ */
+ * Build queue and slot pool
+ * ------------------------------------------------------------------ *
+ *
+ * Each concurrent build runs in its own slot - a private project directory
+ * with its own staged web assets and its own generated Android project - so
+ * two users' builds can never overwrite each other's files. The pool is fixed
+ * so that disk use is bounded and the machine is not swamped by an unlimited
+ * number of Gradle and Rust processes.
+ */
 
 const queue = [];
-let running = false;
+const pool = slots.createPool(BUILD_CONCURRENCY);
+const activeJobs = new Map(); // jobId -> { child, slot }
 
 function enqueue(job) {
   queue.push(job);
   job.status = 'queued';
-  job.queuePosition = queue.length;
+  updateQueuePositions();
   saveJob(job);
   setImmediate(drainQueue);
 }
 
-async function drainQueue() {
-  if (running) return;
-  const job = queue.shift();
-  if (!job) return;
-
-  running = true;
+function updateQueuePositions() {
   queue.forEach((q, i) => {
     q.queuePosition = i + 1;
   });
+}
 
+function queueStatus() {
+  return {
+    running: pool.busy,
+    pending: queue.length,
+    concurrency: pool.size,
+    slotsFree: pool.available
+  };
+}
+
+/** Start as many queued jobs as there are free slots. */
+function drainQueue() {
+  while (pool.available > 0 && queue.length > 0) {
+    const job = queue.shift();
+    updateQueuePositions();
+    // Acquire synchronously: a slot is known to be free inside this loop.
+    pool.acquire().then((slot) => startJob(job, slot));
+  }
+}
+
+async function startJob(job, slot) {
+  job.slot = slot;
   try {
     await runJob(job);
   } catch (err) {
@@ -172,7 +200,8 @@ async function drainQueue() {
     appendLog(job, `[fatal] ${err.message}`);
     saveJob(job);
   } finally {
-    running = false;
+    activeJobs.delete(job.jobId);
+    pool.release(slot);
     pruneOldJobs();
     setImmediate(drainQueue);
   }
@@ -207,10 +236,16 @@ function runBuildProcess(job, args) {
     const child = spawn(process.execPath, [path.join(P.ROOT, 'build.js'), ...args], {
       cwd: P.ROOT,
       env: { ...process.env, NO_COLOR: '1' },
-      windowsHide: true
+      windowsHide: true,
+      // Its own process group, so a cancel can signal the entire build tree
+      // (cargo, rustc, the linker, Gradle) rather than just build.js.
+      detached: process.platform !== 'win32'
     });
 
     job.pid = child.pid;
+    // Recorded so a cancel request can find and stop this build's whole
+    // process tree (build.js spawns cargo, which spawns rustc/linker/gradle).
+    activeJobs.set(job.jobId, { child, slot: job.slot });
 
     const pipe = (stream) => {
       let carry = '';
@@ -271,7 +306,9 @@ async function runJob(job) {
     }
 
     /* 2. Compose the build.js command line. */
-    const args = [`--mode`, job.mode, '--web-src', webDir, '--out', outDir];
+    // The slot is what keeps this build's files separate from every other
+    // build running at the same time.
+    const args = ['--mode', job.mode, '--web-src', webDir, '--out', outDir, '--slot', String(job.slot)];
     for (const target of job.targets) {
       if (target === 'android') args.push('--android');
       else if (target === 'exe' || target === 'windows') args.push('--exe');
@@ -368,11 +405,12 @@ async function runJob(job) {
 
     setStage(job, 'done', `produced ${Object.keys(artifacts).join(', ')} in ${est.formatDuration(job.durationSeconds)}`);
   } catch (err) {
-    job.status = 'failed';
-    job.error = err.message;
+    // A cancelled build fails on the way out; report why it really stopped.
+    job.status = job.cancelRequested ? 'cancelled' : 'failed';
+    job.error = job.cancelRequested ? 'Cancelled by request' : err.message;
     job.finishedAt = new Date().toISOString();
     job.durationSeconds = Math.round((Date.now() - startedMs) / 1000);
-    appendLog(job, `[error] ${err.message}`);
+    appendLog(job, `[${job.status}] ${job.error}`);
   } finally {
     delete job.pid;
     // The raw upload is large and no longer needed once it has been extracted.
@@ -443,7 +481,7 @@ app.get('/api/health', (req, res) => {
     service: 'Tripo Cloud Web-to-App Converter',
     uptime: Math.floor(process.uptime()),
     capabilities: caps,
-    queue: { running, pending: queue.length },
+    queue: queueStatus(),
     baseline: {
       path: P.BASELINE_DIST,
       present: fsx.isFile(path.join(P.BASELINE_DIST, 'index.html')),
@@ -464,11 +502,16 @@ app.get('/api/health', (req, res) => {
  * so this is real waiting time, not a rounding detail.
  */
 function queueWaitSeconds(perJobSeconds) {
-  let wait = queue.length * perJobSeconds;
-  const active = [...jobs.values()].find((j) => j.status === 'running');
-  if (active && active.estimate && active.startedAt) {
-    const elapsed = (Date.now() - Date.parse(active.startedAt)) / 1000;
-    wait += Math.max(0, active.estimate.seconds - elapsed);
+  // Queued work is shared across the slots, so the wait is the queue divided by
+  // how many builds run at once - not the whole queue back to back.
+  let wait = (queue.length * perJobSeconds) / pool.size;
+
+  // If every slot is busy, the soonest one frees is what a new job waits for.
+  if (pool.available === 0) {
+    const remaining = [...jobs.values()]
+      .filter((j) => j.status === 'running' && j.estimate && j.startedAt)
+      .map((j) => Math.max(0, j.estimate.seconds - (Date.now() - Date.parse(j.startedAt)) / 1000));
+    if (remaining.length > 0) wait += Math.min(...remaining);
   }
   return Math.round(wait);
 }
@@ -612,13 +655,100 @@ app.get('/api/jobs', (req, res) => {
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
     .slice(0, 50)
     .map(publicJob);
-  res.json({ jobs: list, queue: { running, pending: queue.length } });
+  res.json({ jobs: list, queue: queueStatus() });
 });
 
 app.get('/api/jobs/:jobId', (req, res) => {
   const job = loadJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
   res.json(publicJob(job));
+});
+
+/**
+ * Stop a build.
+ *
+ * A queued job is simply removed from the queue. A running one has its whole
+ * process tree killed: build.js spawns the Tauri CLI, which spawns cargo, which
+ * spawns rustc, the linker, Gradle and makensis. Killing only the direct child
+ * would leave those orphaned and still holding the slot's files.
+ */
+function killProcessTree(pid) {
+  if (!pid) return false;
+  try {
+    if (process.platform === 'win32') {
+      // Windows has no process groups; taskkill /T walks the child tree.
+      tc.run(['taskkill', '/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+    } else {
+      // Negative pid signals the whole process group (see detached: true).
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch (_) {
+        process.kill(pid, 'SIGTERM');
+      }
+      setTimeout(() => {
+        try {
+          process.kill(-pid, 'SIGKILL');
+        } catch (_) {
+          /* already gone */
+        }
+      }, 5000).unref();
+    }
+    return true;
+  } catch (err) {
+    console.error(`[cancel] could not kill pid ${pid}: ${err.message}`);
+    return false;
+  }
+}
+
+function cancelJob(job, reason) {
+  if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+    return { ok: false, error: `Job ${job.jobId} already ${job.status}` };
+  }
+
+  const queueIndex = queue.indexOf(job);
+  if (queueIndex !== -1) {
+    queue.splice(queueIndex, 1);
+    updateQueuePositions();
+  }
+
+  job.cancelRequested = true;
+  const active = activeJobs.get(job.jobId);
+  if (active && active.child && active.child.pid) {
+    appendLog(job, `[cancel] stopping build process tree (pid ${active.child.pid})`);
+    killProcessTree(active.child.pid);
+    // runJob's finally block does the rest: releases the slot, cleans up and
+    // marks the job. It sees cancelRequested and records it as cancelled.
+    return { ok: true, stopped: 'running' };
+  }
+
+  job.status = 'cancelled';
+  job.error = reason || 'Cancelled';
+  job.finishedAt = new Date().toISOString();
+  appendLog(job, `[cancel] ${job.error}`);
+  saveJob(job);
+  setImmediate(drainQueue);
+  return { ok: true, stopped: 'queued' };
+}
+
+app.post('/api/jobs/:jobId/cancel', (req, res) => {
+  const job = loadJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+
+  const result = cancelJob(job, (req.body && req.body.reason) || 'Cancelled by request');
+  if (!result.ok) return res.status(409).json({ error: result.error, status: job.status });
+  return res.json({ jobId: job.jobId, cancelled: true, was: result.stopped, status: job.status });
+});
+
+/** Cancel everything: running builds and the whole queue. */
+app.post('/api/jobs/cancel-all', (req, res) => {
+  const targets = [...jobs.values()].filter(
+    (j) => j.status === 'running' || j.status === 'queued'
+  );
+  const cancelled = targets.map((job) => {
+    const result = cancelJob(job, 'Cancelled by request (cancel-all)');
+    return { jobId: job.jobId, ok: result.ok, was: result.stopped };
+  });
+  res.json({ cancelled: cancelled.filter((c) => c.ok).length, jobs: cancelled });
 });
 
 app.get('/api/jobs/:jobId/log', (req, res) => {

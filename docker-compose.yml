@@ -8,6 +8,8 @@ services:
       PORT: 3000
       HOST: 0.0.0.0
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-500}
+      # Builds that run at once, each in its own isolated slot.
+      BUILD_CONCURRENCY: ${BUILD_CONCURRENCY:-2}
       JOB_RETENTION: ${JOB_RETENTION:-20}
     volumes:
       # The Rust compilation cache - this is what keeps Fast mode fast between
@@ -17,9 +19,17 @@ services:
       - android-gen:/app/src-tauri/gen/android
       # Finished packages and job state survive restarts.
       - jobs:/app/jobs
+      # The shared baseline. A Clean build's whole purpose is to update this
+      # permanently; without a volume that write lives only in the container
+      # layer and is lost on the next restart or redeploy.
+      - baseline:/app/dist
+      # Per-slot project copies and their generated Android projects.
+      - workspace:/app/.build-workspace
     restart: unless-stopped
 
 volumes:
+  workspace:
   rust-target:
   android-gen:
   jobs:
+  baseline:
