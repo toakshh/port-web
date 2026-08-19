@@ -1,0 +1,29 @@
+# Keep line endings correct no matter which OS the repo is cloned on.
+* text=auto eol=lf
+
+# Executable shell launcher: must stay LF or the shebang breaks on Linux/macOS.
+build      text eol=lf
+*.sh       text eol=lf
+Dockerfile text eol=lf
+
+# Windows launchers need CRLF.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Never touch binary payloads shipped inside the web build.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.icns binary
+*.glb  binary
+*.bin  binary
+*.wasm binary
+*.zip  binary
+*.apk  binary
+*.exe  binary
+*.dmg  binary
+*.keystore binary
+
+# Executable setup launcher: same LF requirement as `build`.
+setup text eol=lf

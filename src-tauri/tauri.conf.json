@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.tripo.app",
   "build": {
-    "frontendDist": "../dist"
+    "frontendDist": "../.build-workspace/dist"
   },
   "app": {
     "windows": [

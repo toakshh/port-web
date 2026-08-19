@@ -1,0 +1,25 @@
+services:
+  converter:
+    build: .
+    image: tripo-converter
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      PORT: 3000
+      HOST: 0.0.0.0
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-500}
+      JOB_RETENTION: ${JOB_RETENTION:-20}
+    volumes:
+      # The Rust compilation cache - this is what keeps Fast mode fast between
+      # container restarts. Without it every job behaves like a clean rebuild.
+      - rust-target:/app/src-tauri/target
+      # Generated Android project, so Fast jobs skip re-initialisation.
+      - android-gen:/app/src-tauri/gen/android
+      # Finished packages and job state survive restarts.
+      - jobs:/app/jobs
+    restart: unless-stopped
+
+volumes:
+  rust-target:
+  android-gen:
+  jobs:

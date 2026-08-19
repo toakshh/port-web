@@ -1,528 +1,738 @@
+'use strict';
+
+/**
+ * Cloud Web-to-App converter service.
+ *
+ * Accepts a web build ZIP, runs the multi-platform Tauri pipeline in a queued
+ * background job, and serves the resulting native packages.
+ *
+ * Design notes:
+ *  - Builds run asynchronously; the HTTP request never blocks on compilation.
+ *  - Builds are serialised, because they share one Rust target cache and one
+ *    generated Android project.
+ *  - The committed baseline in dist/ is never destroyed by a job. Fast jobs
+ *    read it, clean jobs update it (that is exactly what "clean" means here).
+ */
+
+// Install anything missing before the first third-party require, so a fresh
+// clone on any OS boots without a manual `npm install`.
+require('./lib/ensure-deps').ensureDeps(['express', 'cors', 'multer', 'adm-zip']);
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
 const AdmZip = require('adm-zip');
-const { execSync } = require('child_process');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
+const P = require('./lib/paths');
+const fsx = require('./lib/fsx');
+const tc = require('./lib/toolchain');
+const est = require('./lib/estimate');
 
-// Ensure required directories exist
-const uploadsDir = path.join(__dirname, 'uploads');
-const jobsDir = path.join(__dirname, 'jobs');
-const distBuildsDir = path.join(__dirname, 'dist-builds');
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB) || 500;
+const JOB_RETENTION = Number(process.env.JOB_RETENTION) || 20;
+const LOG_TAIL_LINES = 400;
 
-fs.mkdirSync(uploadsDir, { recursive: true });
-fs.mkdirSync(jobsDir, { recursive: true });
-fs.mkdirSync(distBuildsDir, { recursive: true });
+for (const dir of [P.UPLOADS, P.JOBS, P.DIST_BUILDS, P.WORKSPACE]) fsx.ensureDir(dir);
 
-// Multer storage configuration
+tc.setupEnv({ log: (m) => console.log(`[env] ${m}`) });
+
+/* ------------------------------------------------------------------ *
+ * Job store
+ * ------------------------------------------------------------------ */
+
+const jobs = new Map();
+
+const JOB_ID_RE = /^job_[0-9]+_[a-z0-9]+$/;
+
+function jobDir(jobId) {
+  return path.join(P.JOBS, jobId);
+}
+
+function saveJob(job) {
+  const { logBuffer, ...persisted } = job;
+  try {
+    fsx.writeJson(path.join(jobDir(job.jobId), 'job.json'), persisted);
+  } catch (err) {
+    console.error(`[job ${job.jobId}] could not persist state: ${err.message}`);
+  }
+}
+
+/** Load a job from memory, falling back to disk after a server restart. */
+function loadJob(jobId) {
+  if (!JOB_ID_RE.test(jobId)) return null;
+  if (jobs.has(jobId)) return jobs.get(jobId);
+
+  const persisted = fsx.readJson(path.join(jobDir(jobId), 'job.json'));
+  if (persisted) {
+    persisted.logBuffer = [];
+    jobs.set(jobId, persisted);
+    return persisted;
+  }
+  return null;
+}
+
+function restoreJobsFromDisk() {
+  if (!fsx.isDir(P.JOBS)) return;
+  for (const name of fs.readdirSync(P.JOBS)) {
+    if (!JOB_ID_RE.test(name)) continue;
+    const persisted = fsx.readJson(path.join(P.JOBS, name, 'job.json'));
+    if (!persisted) continue;
+    // A job that was running when the process died can never finish.
+    if (persisted.status === 'running' || persisted.status === 'queued') {
+      persisted.status = 'failed';
+      persisted.error = 'Server restarted while this build was in progress';
+    }
+    persisted.logBuffer = [];
+    jobs.set(name, persisted);
+  }
+  console.log(`[jobs] restored ${jobs.size} previous job(s) from disk`);
+}
+
+/** Delete the oldest job directories so the disk does not fill up. */
+function pruneOldJobs() {
+  const entries = [...jobs.values()]
+    .filter((j) => j.status === 'completed' || j.status === 'failed')
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+
+  for (const job of entries.slice(JOB_RETENTION)) {
+    fsx.rmrf(jobDir(job.jobId));
+    jobs.delete(job.jobId);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Upload handling
+ * ------------------------------------------------------------------ */
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
+  destination: (req, file, cb) => cb(null, P.UPLOADS),
   filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    const ext = path.extname(file.originalname);
-    cb(null, `${file.fieldname}-${uniqueSuffix}${ext}`);
+    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    // Never trust the client's filename on disk - keep only a safe extension.
+    const ext = (path.extname(file.originalname) || '').toLowerCase().replace(/[^.a-z0-9]/g, '');
+    cb(null, `${file.fieldname}-${unique}${ext}`);
   }
 });
+
+const ALLOWED_LOGO_EXT = new Set(['.png', '.jpg', '.jpeg', '.ico', '.webp']);
 
 const upload = multer({
   storage,
-  limits: { fileSize: 500 * 1024 * 1024 } // 500 MB limit
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 2 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (file.fieldname === 'webBuild') {
+      if (ext !== '.zip') return cb(new Error('The web build must be a .zip archive'));
+      return cb(null, true);
+    }
+    if (file.fieldname === 'appLogo') {
+      if (!ALLOWED_LOGO_EXT.has(ext)) return cb(new Error('The logo must be a PNG, JPG, ICO or WEBP image'));
+      return cb(null, true);
+    }
+    return cb(new Error(`Unexpected upload field: ${file.fieldname}`));
+  }
 });
 
-// Memory store for job metadata
-const jobsMap = new Map();
+/* ------------------------------------------------------------------ *
+ * Build queue (serialised - builds share one Rust target cache)
+ * ------------------------------------------------------------------ */
 
-// Helper: Copy directory recursively
-function copyRecursiveSync(src, dest) {
-  if (!fs.existsSync(src)) return;
-  const stats = fs.statSync(src);
-  if (stats.isDirectory()) {
-    fs.mkdirSync(dest, { recursive: true });
-    for (const item of fs.readdirSync(src)) {
-      copyRecursiveSync(path.join(src, item), path.join(dest, item));
-    }
-  } else {
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.copyFileSync(src, dest);
-  }
+const queue = [];
+let running = false;
+
+function enqueue(job) {
+  queue.push(job);
+  job.status = 'queued';
+  job.queuePosition = queue.length;
+  saveJob(job);
+  setImmediate(drainQueue);
 }
 
-// Helper: Flatten extracted ZIP recursively if root contains single subfolder or index.html is nested
-function normalizeZipExtraction(dir) {
-  if (!fs.existsSync(dir)) return;
-  
-  let items = fs.readdirSync(dir);
-  while (!fs.existsSync(path.join(dir, 'index.html')) && items.length === 1) {
-    const singleFolder = path.join(dir, items[0]);
-    if (fs.existsSync(singleFolder) && fs.statSync(singleFolder).isDirectory()) {
-      const subItems = fs.readdirSync(singleFolder);
-      for (const item of subItems) {
-        fs.renameSync(path.join(singleFolder, item), path.join(dir, item));
-      }
-      fs.rmdirSync(singleFolder);
-      items = fs.readdirSync(dir);
-    } else {
-      break;
-    }
-  }
+async function drainQueue() {
+  if (running) return;
+  const job = queue.shift();
+  if (!job) return;
 
-  // Deep search fallback if index.html is still missing at root
-  if (!fs.existsSync(path.join(dir, 'index.html'))) {
-    let indexHtmlParent = null;
-    function findIndexHtml(currentDir) {
-      if (!fs.existsSync(currentDir)) return;
-      const entries = fs.readdirSync(currentDir, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = path.join(currentDir, entry.name);
-        if (entry.isFile() && entry.name.toLowerCase() === 'index.html') {
-          indexHtmlParent = currentDir;
-          return;
-        } else if (entry.isDirectory()) {
-          findIndexHtml(fullPath);
-          if (indexHtmlParent) return;
-        }
-      }
-    }
-    findIndexHtml(dir);
-    if (indexHtmlParent && indexHtmlParent !== dir) {
-      console.log(`[ZIP RE-NORMALIZATION] Relocating web build root from ${indexHtmlParent} to ${dir}`);
-      const itemsToMove = fs.readdirSync(indexHtmlParent);
-      for (const item of itemsToMove) {
-        fs.renameSync(path.join(indexHtmlParent, item), path.join(dir, item));
-      }
-    }
-  }
-}
+  running = true;
+  queue.forEach((q, i) => {
+    q.queuePosition = i + 1;
+  });
 
-// Helper: Ensure environment variables for Tauri/Android builds
-function setupEnv() {
-  const homeDir = os.homedir();
-  const isWin = os.platform() === 'win32';
-
-  const JDK_DIR = process.env.JAVA_HOME || (isWin ? path.join(homeDir, 'jdk') : '/home/akshh16/jdk');
-  const ANDROID_SDK_DIR = process.env.ANDROID_HOME || (isWin ? path.join(homeDir, 'AppData', 'Local', 'Android', 'Sdk') : '/home/akshh16/android-sdk');
-
-  if (!process.env.JAVA_HOME && fs.existsSync(JDK_DIR)) {
-    process.env.JAVA_HOME = JDK_DIR;
-  }
-  if (!process.env.ANDROID_HOME && fs.existsSync(ANDROID_SDK_DIR)) {
-    process.env.ANDROID_HOME = ANDROID_SDK_DIR;
-  }
-
-  const cargoCandidates = [
-    process.env.CARGO_HOME ? path.join(process.env.CARGO_HOME, 'bin') : null,
-    path.join(homeDir, '.cargo', 'bin'),
-    process.env.USERPROFILE ? path.join(process.env.USERPROFILE, '.cargo', 'bin') : null,
-    process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, '.cargo', 'bin') : null,
-    '/home/akshh16/.cargo/bin',
-    '/root/.cargo/bin',
-    'C:\\Users\\Aksh\\.cargo\\bin',
-    'C:\\.cargo\\bin',
-    'C:\\Program Files\\Rust\\bin'
-  ].filter(Boolean);
-
-  const extraPaths = [];
-  for (const cp of cargoCandidates) {
-    if (fs.existsSync(cp) && !extraPaths.includes(cp)) {
-      extraPaths.push(cp);
-    }
-  }
-
-  let cargoFound = false;
   try {
-    const tempEnv = { ...process.env, PATH: [...extraPaths, process.env.PATH || ''].join(path.delimiter) };
-    const checkCmd = isWin ? 'where cargo' : 'which cargo';
-    const foundCargo = execSync(checkCmd, { encoding: 'utf8', env: tempEnv }).trim().split(/[\r\n]+/)[0];
-    if (foundCargo && fs.existsSync(foundCargo)) {
-      cargoFound = true;
-      const cargoBinDir = path.dirname(foundCargo.trim());
-      if (!extraPaths.includes(cargoBinDir)) {
-        extraPaths.push(cargoBinDir);
-      }
-    }
-  } catch (_) {}
-
-  // If executing natively on Windows and cargo is missing, auto-create WSL bridge shim
-  if (isWin && !cargoFound) {
-    try {
-      execSync('wsl cargo --version', { stdio: 'ignore' });
-      const shimDir = path.join(__dirname, '.cargo-wsl-shim');
-      if (!fs.existsSync(shimDir)) {
-        fs.mkdirSync(shimDir, { recursive: true });
-      }
-      fs.writeFileSync(path.join(shimDir, 'cargo.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" cargo %*\r\n');
-      fs.writeFileSync(path.join(shimDir, 'rustc.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" rustc %*\r\n');
-      fs.writeFileSync(path.join(shimDir, 'rustup.cmd'), '@echo off\r\nwsl.exe --cd "%CD%" rustup %*\r\n');
-      if (!extraPaths.includes(shimDir)) {
-        extraPaths.unshift(shimDir);
-      }
-      console.log('[ENV] Created WSL Cargo bridge shim with directory mapping.');
-    } catch (_) {}
-  }
-
-  if (process.env.JAVA_HOME) {
-    extraPaths.push(path.join(process.env.JAVA_HOME, 'bin'));
-  }
-  if (process.env.ANDROID_HOME) {
-    extraPaths.push(path.join(process.env.ANDROID_HOME, 'build-tools', '35.0.0'));
-    extraPaths.push(path.join(process.env.ANDROID_HOME, 'build-tools', '34.0.0'));
-    extraPaths.push(path.join(process.env.ANDROID_HOME, 'platform-tools'));
-  }
-  if (extraPaths.length > 0) {
-    process.env.PATH = [...extraPaths, process.env.PATH].join(path.delimiter);
+    await runJob(job);
+  } catch (err) {
+    job.status = 'failed';
+    job.error = err.message;
+    appendLog(job, `[fatal] ${err.message}`);
+    saveJob(job);
+  } finally {
+    running = false;
+    pruneOldJobs();
+    setImmediate(drainQueue);
   }
 }
-setupEnv();
 
-// Health Check Endpoint
+function appendLog(job, line) {
+  const text = String(line).replace(/\s+$/, '');
+  if (!text) return;
+  job.logBuffer = job.logBuffer || [];
+  job.logBuffer.push(text);
+  if (job.logBuffer.length > LOG_TAIL_LINES) job.logBuffer.shift();
+  try {
+    fs.appendFileSync(path.join(jobDir(job.jobId), 'build.log'), `${text}\n`);
+  } catch (_) {
+    /* logging must never break a build */
+  }
+}
+
+function setStage(job, stage, detail) {
+  job.stage = stage;
+  if (detail) appendLog(job, `[stage] ${stage}: ${detail}`);
+  else appendLog(job, `[stage] ${stage}`);
+  saveJob(job);
+}
+
+/* ------------------------------------------------------------------ *
+ * The build itself
+ * ------------------------------------------------------------------ */
+
+function runBuildProcess(job, args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(P.ROOT, 'build.js'), ...args], {
+      cwd: P.ROOT,
+      env: { ...process.env, NO_COLOR: '1' },
+      windowsHide: true
+    });
+
+    job.pid = child.pid;
+
+    const pipe = (stream) => {
+      let carry = '';
+      stream.setEncoding('utf8');
+      stream.on('data', (chunk) => {
+        const lines = (carry + chunk).split(/\r?\n/);
+        carry = lines.pop();
+        for (const line of lines) appendLog(job, line);
+      });
+      stream.on('end', () => {
+        if (carry) appendLog(job, carry);
+      });
+    };
+
+    pipe(child.stdout);
+    pipe(child.stderr);
+
+    child.on('error', (err) => resolve({ ok: false, code: -1, error: err.message }));
+    child.on('close', (code) => resolve({ ok: code === 0, code }));
+  });
+}
+
+async function runJob(job) {
+  const dir = jobDir(job.jobId);
+  const webDir = path.join(dir, 'web');
+  const outDir = path.join(dir, 'build');
+  const outputsDir = fsx.ensureDir(path.join(dir, 'outputs'));
+
+  job.status = 'running';
+  job.startedAt = new Date().toISOString();
+  // Captured before the build purges or populates it, so the recorded sample is
+  // labelled with the cache state the build actually started from.
+  job.cacheWarm = job.mode === 'clean' ? false : est.isCacheWarm();
+  const prediction = est.estimate({ mode: job.mode, targets: job.targets, cacheWarm: job.cacheWarm });
+  job.estimate = { seconds: prediction.seconds, basis: prediction.basis, samples: prediction.samples };
+  const startedMs = Date.now();
+  delete job.queuePosition;
+  saveJob(job);
+  appendLog(job, `[estimate] about ${est.formatDuration(prediction.seconds)} (${prediction.basis})`);
+
+  try {
+    /* 1. Extract the upload (rejecting path-traversal entries). */
+    setStage(job, 'extract', `unpacking ${path.basename(job.upload.originalName)}`);
+    fsx.emptyDir(webDir);
+    const count = fsx.safeExtractZip(AdmZip, job.upload.zipPath, webDir);
+    fsx.normalizeWebRoot(webDir);
+    appendLog(job, `[extract] ${count} entries extracted`);
+
+    if (!fsx.isFile(path.join(webDir, 'index.html'))) {
+      throw new Error('The uploaded archive has no index.html - it does not look like a web build');
+    }
+
+    if (job.mode === 'fast' && !fsx.isDir(path.join(webDir, P.SWAP_SUBPATH))) {
+      throw new Error(
+        `Fast mode needs "${P.SWAP_SUBPATH.split(path.sep).join('/')}" inside the ZIP. ` +
+          'Use Clean Rebuild for an archive that does not contain it.'
+      );
+    }
+
+    /* 2. Compose the build.js command line. */
+    const args = [`--mode`, job.mode, '--web-src', webDir, '--out', outDir];
+    for (const target of job.targets) {
+      if (target === 'android') args.push('--android');
+      else if (target === 'exe' || target === 'windows') args.push('--exe');
+      else if (target === 'mac' || target === 'dmg') args.push('--mac');
+      else if (target === 'ios') args.push('--ios');
+    }
+    if (job.appName) args.push('--name', job.appName);
+    if (job.appIdentifier) args.push('--identifier', job.appIdentifier);
+    if (job.upload.logoPath) args.push('--logo', job.upload.logoPath);
+
+    setStage(job, 'build', `node build.js ${args.join(' ')}`);
+    const result = await runBuildProcess(job, args);
+
+    /* 3. Collect whatever the build actually produced. */
+    setStage(job, 'package');
+    const summary = fsx.readJson(path.join(outDir, 'build-result.json'), null);
+    if (!summary) {
+      throw new Error(
+        result.error
+          ? `Build process could not start: ${result.error}`
+          : `Build failed before producing any artifact (exit code ${result.code}). See the log for details.`
+      );
+    }
+
+    job.buildFailures = summary.failures || [];
+    const artifacts = {};
+    const files = {};
+    const safeName = (job.appName || 'app').replace(/[^a-z0-9-_]+/gi, '_').replace(/^_+|_+$/g, '') || 'app';
+
+    const collect = (key, sourcePath, filename) => {
+      if (!sourcePath || !fs.existsSync(sourcePath)) return;
+      if (fsx.isDir(sourcePath)) {
+        const inner = fsx.walkFiles(sourcePath);
+        if (inner.length === 0) return;
+        const destDir = path.join(outputsDir, key);
+        fsx.copyPath(sourcePath, destDir);
+        files[key] = destDir;
+      } else {
+        const dest = path.join(outputsDir, filename);
+        fs.copyFileSync(sourcePath, dest);
+        files[key] = dest;
+      }
+      artifacts[key] = `/api/download/${job.jobId}?file=${key}`;
+    };
+
+    collect('apk', summary.artifacts.android, `${safeName}-signed.apk`);
+    collect('exe', path.join(outDir, 'windows', 'app.exe'), `${safeName}.exe`);
+    collect('setup', path.join(outDir, 'windows', 'tripo-setup.exe'), `${safeName}-setup.exe`);
+    collect('dmg', summary.artifacts.mac, `${safeName}.dmg`);
+    collect('ios', summary.artifacts.ios, `${safeName}.ipa`);
+
+    if (Object.keys(files).length === 0) {
+      const why = (summary.failures || []).join('; ') || `exit code ${result.code}`;
+      throw new Error(`No installable package was produced. ${why}`);
+    }
+
+    /* 4. One archive with everything. */
+    const bundle = new AdmZip();
+    for (const [key, filePath] of Object.entries(files)) {
+      if (fsx.isDir(filePath)) bundle.addLocalFolder(filePath, key);
+      else bundle.addLocalFile(filePath);
+    }
+    const zipPath = path.join(outputsDir, `${job.jobId}-outputs.zip`);
+    bundle.writeZip(zipPath);
+    files.zip = zipPath;
+    artifacts.zip = `/api/download/${job.jobId}`;
+
+    /* 5. Mirror the latest build into dist-builds/ for CLI parity. */
+    try {
+      for (const platform of ['android', 'windows', 'mac', 'ios']) {
+        const from = path.join(outDir, platform);
+        if (fsx.hasFiles(from)) fsx.syncDir(from, path.join(P.DIST_BUILDS, platform));
+      }
+      fs.copyFileSync(zipPath, path.join(P.DIST_BUILDS, `${job.jobId}-outputs.zip`));
+    } catch (err) {
+      appendLog(job, `[warn] could not mirror artifacts into dist-builds: ${err.message}`);
+    }
+
+    job.status = 'completed';
+    job.artifacts = artifacts;
+    job.artifactFiles = files;
+    job.downloadUrl = `/api/download/${job.jobId}`;
+    job.finishedAt = new Date().toISOString();
+    job.durationSeconds = Math.round((Date.now() - startedMs) / 1000);
+
+    // Only successful builds feed the estimator; a job that failed after ten
+    // seconds says nothing about how long a real build takes.
+    est.record({
+      mode: job.mode,
+      targets: job.targets,
+      cacheWarm: job.cacheWarm,
+      durationMs: Date.now() - startedMs
+    });
+
+    setStage(job, 'done', `produced ${Object.keys(artifacts).join(', ')} in ${est.formatDuration(job.durationSeconds)}`);
+  } catch (err) {
+    job.status = 'failed';
+    job.error = err.message;
+    job.finishedAt = new Date().toISOString();
+    job.durationSeconds = Math.round((Date.now() - startedMs) / 1000);
+    appendLog(job, `[error] ${err.message}`);
+  } finally {
+    delete job.pid;
+    // The raw upload is large and no longer needed once it has been extracted.
+    for (const temp of [job.upload.zipPath]) {
+      if (temp && fs.existsSync(temp)) fs.rmSync(temp, { force: true });
+    }
+    fsx.rmrf(webDir);
+    saveJob(job);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * HTTP API
+ * ------------------------------------------------------------------ */
+
+const app = express();
+app.disable('x-powered-by');
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(P.PUBLIC));
+
+/**
+ * Where a running job is, as a percentage, and how much longer it is likely to
+ * take. Computed on the server so the dashboard, curl and any other client all
+ * agree instead of each inventing their own animation.
+ */
+function progressFor(job, elapsedSeconds) {
+  if (job.status === 'completed') return 100;
+  if (job.status === 'failed') return 100;
+  if (job.status === 'queued') return 2;
+
+  const spans = { extract: [5, 15], build: [15, 92], package: [93, 99], done: [100, 100] };
+  const [from, to] = spans[job.stage] || [3, 5];
+  if (job.stage !== 'build') return from;
+
+  // Compilation dominates: interpolate across the estimate, easing off as the
+  // estimate is exceeded so the bar never stalls at 100% while still running.
+  const total = (job.estimate && job.estimate.seconds) || 120;
+  const ratio = total > 0 ? elapsedSeconds / total : 1;
+  const eased = ratio <= 1 ? ratio : 1 - 1 / (1 + (ratio - 1) * 2) + 1 - 0.0001;
+  return Math.min(to, Math.round(from + (to - from) * Math.min(eased, 0.999)));
+}
+
+function publicJob(job) {
+  if (!job) return null;
+  const { logBuffer, artifactFiles, upload, pid, ...rest } = job;
+
+  const active = job.status === 'running' || job.status === 'queued';
+  const elapsed = job.startedAt
+    ? Math.round(((job.finishedAt ? Date.parse(job.finishedAt) : Date.now()) - Date.parse(job.startedAt)) / 1000)
+    : 0;
+
+  rest.elapsedSeconds = elapsed;
+  rest.progress = progressFor(job, elapsed);
+
+  if (active && job.estimate) {
+    // Never promise "0s left" while work is still happening.
+    rest.etaSeconds = Math.max(job.status === 'running' ? 5 : 0, job.estimate.seconds - elapsed);
+  }
+  return rest;
+}
+
 app.get('/api/health', (req, res) => {
-  const javaHome = process.env.JAVA_HOME || '/home/akshh16/jdk';
-  const androidHome = process.env.ANDROID_HOME || '/home/akshh16/android-sdk';
-  const hasJava = fs.existsSync(javaHome);
-  const hasAndroid = fs.existsSync(androidHome);
-
+  const caps = tc.capabilities();
   res.json({
     status: 'ok',
     service: 'Tripo Cloud Web-to-App Converter',
     uptime: Math.floor(process.uptime()),
-    capabilities: {
-      android: hasJava && hasAndroid,
-      windows: true,
-      mac: process.platform === 'darwin',
-      ios: process.platform === 'darwin'
+    capabilities: caps,
+    queue: { running, pending: queue.length },
+    baseline: {
+      path: P.BASELINE_DIST,
+      present: fsx.isFile(path.join(P.BASELINE_DIST, 'index.html')),
+      swapPath: P.SWAP_SUBPATH.split(path.sep).join('/')
     },
     environment: {
-      platform: process.platform,
+      platform: `${process.platform}-${process.arch}`,
       nodeVersion: process.version,
-      JAVA_HOME: javaHome,
-      ANDROID_HOME: androidHome
+      root: P.ROOT
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// Conversion Endpoint
+/**
+ * How long a new job would wait before its own build starts: whatever is left
+ * of the running build, plus everything already queued. Builds are serialised,
+ * so this is real waiting time, not a rounding detail.
+ */
+function queueWaitSeconds(perJobSeconds) {
+  let wait = queue.length * perJobSeconds;
+  const active = [...jobs.values()].find((j) => j.status === 'running');
+  if (active && active.estimate && active.startedAt) {
+    const elapsed = (Date.now() - Date.parse(active.startedAt)) / 1000;
+    wait += Math.max(0, active.estimate.seconds - elapsed);
+  }
+  return Math.round(wait);
+}
+
+/**
+ * Predicted duration for both modes with the given targets, so the dashboard
+ * can tell the user what each mode will cost before they commit to one.
+ */
+app.get('/api/estimate', (req, res) => {
+  const known = new Set(['android', 'exe', 'windows', 'mac', 'dmg', 'ios']);
+  const targets = String(req.query.targets || 'android,exe')
+    .toLowerCase()
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => known.has(t));
+
+  const result = est.estimateBothModes(targets);
+  const decorate = (e) => ({ ...e, human: est.formatDuration(e.seconds) });
+
+  res.json({
+    targets: result.targets,
+    cacheWarm: result.cacheWarm,
+    queueAheadSeconds: queueWaitSeconds(result.fast.seconds || 0),
+    fast: decorate(result.fast),
+    clean: decorate(result.clean)
+  });
+});
+
 const convertFields = upload.fields([
   { name: 'webBuild', maxCount: 1 },
   { name: 'appLogo', maxCount: 1 }
 ]);
 
-app.post('/api/convert', convertFields, async (req, res) => {
-  const webBuildFile = req.files && req.files['webBuild'] ? req.files['webBuild'][0] : null;
-  const appLogoFile = req.files && req.files['appLogo'] ? req.files['appLogo'][0] : null;
+app.post('/api/convert', (req, res) => {
+  convertFields(req, res, async (uploadErr) => {
+    const webBuildFile = req.files && req.files.webBuild ? req.files.webBuild[0] : null;
+    const appLogoFile = req.files && req.files.appLogo ? req.files.appLogo[0] : null;
 
-  if (!webBuildFile) {
-    return res.status(400).json({ error: 'Missing webBuild ZIP file' });
-  }
-
-  const appName = (req.body.appName || '').trim();
-  const appIdentifier = (req.body.appIdentifier || '').trim();
-  const targetsRaw = (req.body.targets || 'android,exe').trim();
-
-  const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const jobDir = path.join(jobsDir, jobId);
-  const jobDistDir = path.join(jobDir, 'dist');
-  const jobOutputsDir = path.join(jobDir, 'outputs');
-
-  fs.mkdirSync(jobDistDir, { recursive: true });
-  fs.mkdirSync(jobOutputsDir, { recursive: true });
-
-  let logoPathInJob = null;
-
-  try {
-    console.log(`[JOB ${jobId}] Starting conversion for targets: ${targetsRaw}`);
-
-    // 1. Unzip webBuild into jobDistDir
-    const zip = new AdmZip(webBuildFile.path);
-    zip.extractAllTo(jobDistDir, true);
-    normalizeZipExtraction(jobDistDir);
-
-    // Verify index.html exists
-    if (!fs.existsSync(path.join(jobDistDir, 'index.html'))) {
-      throw new Error('Extracted web build does not contain an index.html file at root level');
-    }
-
-    // 2. Clear main dist/ and copy job dist contents
-    const mainDistDir = path.join(__dirname, 'dist');
-    fs.rmSync(mainDistDir, { recursive: true, force: true });
-    fs.mkdirSync(mainDistDir, { recursive: true });
-    copyRecursiveSync(jobDistDir, mainDistDir);
-
-    // 3. Clear dist-builds directory
-    fs.rmSync(distBuildsDir, { recursive: true, force: true });
-    fs.mkdirSync(distBuildsDir, { recursive: true });
-
-    // 4. Save logo if provided
-    if (appLogoFile) {
-      const ext = path.extname(appLogoFile.originalname) || '.png';
-      logoPathInJob = path.join(jobDir, `logo${ext}`);
-      fs.copyFileSync(appLogoFile.path, logoPathInJob);
-    }
-
-    // 5. Build CLI options for build.js
-    const buildCmdArgs = ['build.js'];
-    const targetsList = targetsRaw.toLowerCase().split(',').map(t => t.trim());
-
-    if (targetsList.includes('all')) {
-      buildCmdArgs.push('--all');
-    } else {
-      if (targetsList.includes('android')) buildCmdArgs.push('--android');
-      if (targetsList.includes('exe') || targetsList.includes('windows')) buildCmdArgs.push('--exe');
-      if (targetsList.includes('mac') || targetsList.includes('dmg')) buildCmdArgs.push('--mac');
-      if (targetsList.includes('ios')) buildCmdArgs.push('--ios');
-    }
-
-    // Fallback target if none matched
-    if (!buildCmdArgs.some(a => ['--android', '--exe', '--mac', '--ios', '--all'].includes(a))) {
-      buildCmdArgs.push('--android', '--exe');
-    }
-
-    if (appName) {
-      buildCmdArgs.push('--name', appName);
-    }
-
-    if (appIdentifier) {
-      buildCmdArgs.push('--identifier', appIdentifier);
-    }
-
-    if (logoPathInJob) {
-      buildCmdArgs.push('--logo', logoPathInJob);
-    }
-
-    const isCleanBuild = (req.body.clean === 'true' || req.body.clean === '1');
-    if (isCleanBuild) {
-      buildCmdArgs.push('--clean');
-    } else {
-      buildCmdArgs.push('--fast');
-    }
-
-    // Backup tauri.conf.json and package.json to restore afterwards
-    const tauriConfPath = path.join(__dirname, 'src-tauri', 'tauri.conf.json');
-    const pkgJsonPath = path.join(__dirname, 'package.json');
-    const originalTauriConf = fs.existsSync(tauriConfPath) ? fs.readFileSync(tauriConfPath, 'utf8') : null;
-    const originalPkgJson = fs.existsSync(pkgJsonPath) ? fs.readFileSync(pkgJsonPath, 'utf8') : null;
-
-    try {
-      let execCmd = `node ${buildCmdArgs.map(a => `"${a}"`).join(' ')}`;
-      const isWin = os.platform() === 'win32';
-      if (isWin) {
-        let hasWinCargo = false;
-        try {
-          execSync('where cargo', { stdio: 'ignore' });
-          hasWinCargo = true;
-        } catch (_) {}
-
-        if (!hasWinCargo) {
-          try {
-            execSync('wsl --version', { stdio: 'ignore' });
-            const wslPath = execSync(`wsl wslpath "${__dirname.replace(/\\/g, '/')}"`, { encoding: 'utf8' }).trim();
-            const wslArgs = buildCmdArgs.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ');
-            execCmd = `wsl bash -c "cd '${wslPath}' && node build.js ${wslArgs}"`;
-            console.log(`[JOB ${jobId}] Native Windows Cargo absent. Auto-delegating build to WSL Node.`);
-          } catch (_) {}
-        }
+    const cleanup = () => {
+      for (const file of [webBuildFile, appLogoFile]) {
+        if (file && fs.existsSync(file.path)) fs.rmSync(file.path, { force: true });
       }
-
-      console.log(`[JOB ${jobId}] Executing: ${execCmd}`);
-      execSync(execCmd, { cwd: __dirname, stdio: 'inherit', env: process.env });
-    } finally {
-      // Restore tauri.conf.json and package.json
-      if (originalTauriConf) fs.writeFileSync(tauriConfPath, originalTauriConf, 'utf8');
-      if (originalPkgJson) fs.writeFileSync(pkgJsonPath, originalPkgJson, 'utf8');
-
-      // Cleanup uploaded temp files
-      if (fs.existsSync(webBuildFile.path)) fs.unlinkSync(webBuildFile.path);
-      if (appLogoFile && fs.existsSync(appLogoFile.path)) fs.unlinkSync(appLogoFile.path);
-    }
-
-    // 6. Gather build outputs
-    const artifacts = {};
-    const artifactFiles = {};
-
-    // Android APK
-    const signedApk = path.join(distBuildsDir, 'android', 'tripo-app-signed.apk');
-    if (fs.existsSync(signedApk)) {
-      const sanitizedName = appName ? appName.replace(/[^a-z0-9-_]/gi, '_') : 'tripo-app';
-      const destApkName = `${sanitizedName}-signed.apk`;
-      const destApkPath = path.join(jobOutputsDir, destApkName);
-      fs.copyFileSync(signedApk, destApkPath);
-      artifacts.apk = `/api/download/${jobId}?file=apk`;
-      artifactFiles.apk = destApkPath;
-    }
-
-    // Windows EXE / Setup
-    const winSetup = path.join(distBuildsDir, 'windows', 'tripo-setup.exe');
-    const winExe = path.join(distBuildsDir, 'windows', 'app.exe');
-    if (fs.existsSync(winSetup)) {
-      const sanitizedName = appName ? appName.replace(/[^a-z0-9-_]/gi, '_') : 'tripo';
-      const destSetupName = `${sanitizedName}-setup.exe`;
-      const destSetupPath = path.join(jobOutputsDir, destSetupName);
-      fs.copyFileSync(winSetup, destSetupPath);
-      artifacts.exe = `/api/download/${jobId}?file=exe`;
-      artifactFiles.exe = destSetupPath;
-    } else if (fs.existsSync(winExe)) {
-      const sanitizedName = appName ? appName.replace(/[^a-z0-9-_]/gi, '_') : 'tripo-app';
-      const destExeName = `${sanitizedName}.exe`;
-      const destExePath = path.join(jobOutputsDir, destExeName);
-      fs.copyFileSync(winExe, destExePath);
-      artifacts.exe = `/api/download/${jobId}?file=exe`;
-      artifactFiles.exe = destExePath;
-    }
-
-    // macOS DMG
-    const macDir = path.join(distBuildsDir, 'mac');
-    if (fs.existsSync(macDir)) {
-      const destMacDir = path.join(jobOutputsDir, 'mac');
-      copyRecursiveSync(macDir, destMacDir);
-      artifacts.dmg = `/api/download/${jobId}?file=dmg`;
-      artifactFiles.dmg = destMacDir;
-    }
-
-    // 7. Create all-in-one ZIP package
-    const outputZip = new AdmZip();
-    if (artifactFiles.apk) outputZip.addLocalFile(artifactFiles.apk);
-    if (artifactFiles.exe) outputZip.addLocalFile(artifactFiles.exe);
-    if (artifactFiles.dmg) {
-      if (fs.statSync(artifactFiles.dmg).isFile()) {
-        outputZip.addLocalFile(artifactFiles.dmg);
-      } else {
-        outputZip.addLocalFolder(artifactFiles.dmg, 'mac');
-      }
-    }
-
-    const zipFilename = `${jobId}-outputs.zip`;
-    const zipPathInJob = path.join(jobOutputsDir, zipFilename);
-    const zipPathInDistBuilds = path.join(distBuildsDir, zipFilename);
-
-    outputZip.writeZip(zipPathInJob);
-    outputZip.writeZip(zipPathInDistBuilds);
-
-    artifacts.zip = `/api/download/${jobId}`;
-    artifactFiles.zip = zipPathInJob;
-
-    const jobRecord = {
-      jobId,
-      status: 'completed',
-      downloadUrl: `/api/download/${jobId}`,
-      artifacts,
-      artifactFiles,
-      createdAt: new Date().toISOString()
     };
 
-    jobsMap.set(jobId, jobRecord);
+    if (uploadErr) {
+      cleanup();
+      const tooBig = uploadErr.code === 'LIMIT_FILE_SIZE';
+      return res.status(tooBig ? 413 : 400).json({
+        status: 'failed',
+        error: tooBig ? `Upload exceeds the ${MAX_UPLOAD_MB} MB limit` : uploadErr.message
+      });
+    }
 
-    console.log(`[JOB ${jobId}] Completed successfully! Artifacts generated:`, Object.keys(artifacts));
+    if (!webBuildFile) {
+      cleanup();
+      return res.status(400).json({ status: 'failed', error: 'Missing webBuild ZIP file' });
+    }
 
-    return res.json({
+    const appName = String(req.body.appName || '').trim().slice(0, 64);
+    const appIdentifier = String(req.body.appIdentifier || '').trim().slice(0, 128);
+    if (appIdentifier && !/^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(appIdentifier)) {
+      cleanup();
+      return res.status(400).json({
+        status: 'failed',
+        error: 'App identifier must look like com.example.app'
+      });
+    }
+
+    const known = new Set(['android', 'exe', 'windows', 'mac', 'dmg', 'ios']);
+    let targets = String(req.body.targets || 'android,exe')
+      .toLowerCase()
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => known.has(t));
+    if (String(req.body.targets || '').toLowerCase().includes('all')) {
+      targets = ['android', 'exe', 'mac', 'ios'];
+    }
+    if (targets.length === 0) targets = ['android', 'exe'];
+
+    // `mode` is the documented field; `clean=true` stays supported for older clients.
+    const rawMode = String(req.body.mode || '').toLowerCase();
+    const mode =
+      rawMode === 'clean' || req.body.clean === 'true' || req.body.clean === '1' ? 'clean' : 'fast';
+
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const dir = fsx.ensureDir(jobDir(jobId));
+
+    let logoPath = null;
+    if (appLogoFile) {
+      const ext = path.extname(appLogoFile.originalname).toLowerCase() || '.png';
+      logoPath = path.join(dir, `logo${ext}`);
+      fs.copyFileSync(appLogoFile.path, logoPath);
+      fs.rmSync(appLogoFile.path, { force: true });
+    }
+
+    const job = {
       jobId,
-      status: 'completed',
-      downloadUrl: `/api/download/${jobId}`,
-      artifacts
-    });
+      status: 'queued',
+      stage: 'queued',
+      mode,
+      targets,
+      appName: appName || null,
+      appIdentifier: appIdentifier || null,
+      createdAt: new Date().toISOString(),
+      upload: {
+        zipPath: webBuildFile.path,
+        originalName: webBuildFile.originalname,
+        sizeBytes: webBuildFile.size,
+        logoPath
+      },
+      logBuffer: []
+    };
 
-  } catch (err) {
-    console.error(`[JOB ${jobId}] Build error:`, err);
-    // Cleanup upload files on error
-    if (webBuildFile && fs.existsSync(webBuildFile.path)) fs.unlinkSync(webBuildFile.path);
-    if (appLogoFile && fs.existsSync(appLogoFile.path)) fs.unlinkSync(appLogoFile.path);
+    jobs.set(jobId, job);
+    console.log(`[job ${jobId}] queued - mode=${mode} targets=${targets.join(',')}`);
+    enqueue(job);
 
-    return res.status(500).json({
-      status: 'failed',
+    // `?wait=1` keeps the connection open until the build finishes, which is
+    // convenient for curl and CI but not used by the dashboard.
+    if (req.query.wait === '1' || req.body.wait === '1') {
+      const deadline = Date.now() + 60 * 60 * 1000;
+      while (job.status !== 'completed' && job.status !== 'failed' && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      return res.status(job.status === 'completed' ? 200 : 500).json(publicJob(job));
+    }
+
+    return res.status(202).json({
       jobId,
-      error: err.message || 'Build failed'
+      status: job.status,
+      mode,
+      targets,
+      statusUrl: `/api/jobs/${jobId}`,
+      logUrl: `/api/jobs/${jobId}/log`
     });
-  }
+  });
 });
 
-// Download Endpoint
+app.get('/api/jobs', (req, res) => {
+  const list = [...jobs.values()]
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 50)
+    .map(publicJob);
+  res.json({ jobs: list, queue: { running, pending: queue.length } });
+});
+
+app.get('/api/jobs/:jobId', (req, res) => {
+  const job = loadJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+  res.json(publicJob(job));
+});
+
+app.get('/api/jobs/:jobId/log', (req, res) => {
+  const job = loadJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+
+  let lines = job.logBuffer || [];
+  if (lines.length === 0) {
+    const logFile = path.join(jobDir(job.jobId), 'build.log');
+    if (fsx.isFile(logFile)) {
+      lines = fs.readFileSync(logFile, 'utf8').split(/\r?\n/).filter(Boolean).slice(-LOG_TAIL_LINES);
+    }
+  }
+  res.json({ jobId: job.jobId, status: job.status, stage: job.stage, lines });
+});
+
+/** Keep legacy `/api/status/:jobId` working. */
+app.get('/api/status/:jobId', (req, res) => {
+  const job = loadJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+  res.json(publicJob(job));
+});
+
+const DOWNLOAD_KEYS = new Set(['zip', 'apk', 'exe', 'setup', 'dmg', 'ios']);
+
 app.get('/api/download/:jobId', (req, res) => {
-  const { jobId } = req.params;
-  const requestedFile = req.query.file;
-
-  const jobRecord = jobsMap.get(jobId);
-  const jobOutputsDir = path.join(jobsDir, jobId, 'outputs');
-  const distBuildsZip = path.join(distBuildsDir, `${jobId}-outputs.zip`);
-
-  if (!fs.existsSync(jobOutputsDir) && !fs.existsSync(distBuildsZip)) {
-    return res.status(404).json({ error: `Job ${jobId} not found` });
+  const job = loadJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+  if (job.status !== 'completed') {
+    return res.status(409).json({ error: `Job ${job.jobId} is ${job.status}`, status: job.status });
   }
 
-  let targetFilePath = null;
-  let downloadFilename = null;
+  const requested = String(req.query.file || 'zip').toLowerCase();
+  const outputsDir = path.resolve(jobDir(job.jobId), 'outputs');
+  let target = null;
 
-  if (!requestedFile || requestedFile === 'zip') {
-    if (jobRecord && jobRecord.artifactFiles && jobRecord.artifactFiles.zip && fs.existsSync(jobRecord.artifactFiles.zip)) {
-      targetFilePath = jobRecord.artifactFiles.zip;
-    } else if (fs.existsSync(distBuildsZip)) {
-      targetFilePath = distBuildsZip;
-    } else if (fs.existsSync(jobOutputsDir)) {
-      const files = fs.readdirSync(jobOutputsDir);
-      const zFile = files.find(f => f.endsWith('.zip'));
-      if (zFile) targetFilePath = path.join(jobOutputsDir, zFile);
-    }
-    downloadFilename = `${jobId}-outputs.zip`;
-  } else if (requestedFile === 'apk') {
-    if (jobRecord && jobRecord.artifactFiles && jobRecord.artifactFiles.apk && fs.existsSync(jobRecord.artifactFiles.apk)) {
-      targetFilePath = jobRecord.artifactFiles.apk;
-    } else if (fs.existsSync(jobOutputsDir)) {
-      const files = fs.readdirSync(jobOutputsDir);
-      const apk = files.find(f => f.endsWith('.apk'));
-      if (apk) targetFilePath = path.join(jobOutputsDir, apk);
-    }
-  } else if (requestedFile === 'exe' || requestedFile === 'setup') {
-    if (jobRecord && jobRecord.artifactFiles && jobRecord.artifactFiles.exe && fs.existsSync(jobRecord.artifactFiles.exe)) {
-      targetFilePath = jobRecord.artifactFiles.exe;
-    } else if (fs.existsSync(jobOutputsDir)) {
-      const files = fs.readdirSync(jobOutputsDir);
-      const exe = files.find(f => f.endsWith('.exe'));
-      if (exe) targetFilePath = path.join(jobOutputsDir, exe);
-    }
-  } else if (requestedFile === 'dmg') {
-    if (jobRecord && jobRecord.artifactFiles && jobRecord.artifactFiles.dmg && fs.existsSync(jobRecord.artifactFiles.dmg)) {
-      targetFilePath = jobRecord.artifactFiles.dmg;
-    } else if (fs.existsSync(jobOutputsDir)) {
-      const files = fs.readdirSync(jobOutputsDir);
-      const dmg = files.find(f => f.endsWith('.dmg'));
-      if (dmg) targetFilePath = path.join(jobOutputsDir, dmg);
+  if (DOWNLOAD_KEYS.has(requested)) {
+    target = job.artifactFiles && job.artifactFiles[requested];
+    if (!target && requested === 'zip') {
+      const found = fsx.isDir(outputsDir) && fs.readdirSync(outputsDir).find((f) => f.endsWith('.zip'));
+      if (found) target = path.join(outputsDir, found);
     }
   } else {
-    // Explicit filename lookup
-    const explicitPath = path.join(jobOutputsDir, requestedFile);
-    if (fs.existsSync(explicitPath) && fs.statSync(explicitPath).isFile()) {
-      targetFilePath = explicitPath;
-    }
+    // A literal filename is allowed, but only a bare name inside this job's
+    // own outputs directory - never a path the caller composed.
+    const base = path.basename(requested);
+    if (base === requested) target = path.join(outputsDir, base);
   }
 
-  if (!targetFilePath || !fs.existsSync(targetFilePath) || !fs.statSync(targetFilePath).isFile()) {
-    return res.status(404).json({ error: `File '${requestedFile || 'zip'}' for job ${jobId} not found` });
+  if (!target) return res.status(404).json({ error: `No '${requested}' artifact for job ${job.jobId}` });
+
+  const resolved = path.resolve(target);
+  const relative = path.relative(outputsDir, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return res.status(400).json({ error: 'Invalid file request' });
+  }
+  if (!fsx.isFile(resolved)) {
+    return res.status(404).json({ error: `Artifact '${requested}' is not available for job ${job.jobId}` });
   }
 
-  downloadFilename = downloadFilename || path.basename(targetFilePath);
-  return res.download(path.resolve(targetFilePath), downloadFilename, { dotfiles: 'allow' }, (err) => {
+  return res.download(resolved, path.basename(resolved), (err) => {
     if (err && !res.headersSent) {
-      console.error(`[DOWNLOAD ERROR] Failed to serve ${downloadFilename}:`, err);
+      console.error(`[download] ${job.jobId}/${requested}: ${err.message}`);
+      res.status(500).end();
     }
   });
 });
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`====================================================`);
-  console.log(` Tripo Web-to-App Cloud Converter Service Running   `);
-  console.log(` Port: ${PORT}                                       `);
-  console.log(` Dashboard: http://localhost:${PORT}/               `);
-  console.log(` Health:    http://localhost:${PORT}/api/health     `);
-  console.log(`====================================================`);
+app.use((err, req, res, next) => {
+  console.error('[server]', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: err.message || 'Internal server error' });
 });
+
+/* ------------------------------------------------------------------ *
+ * Boot
+ * ------------------------------------------------------------------ */
+
+restoreJobsFromDisk();
+
+// `exclusive` matters on Windows: without it a second instance silently binds
+// the same port and the two processes split incoming requests, which looks like
+// the server randomly forgetting its own state.
+const server = app.listen({ port: PORT, host: HOST, exclusive: true }, () => {
+  const caps = tc.capabilities();
+  const shown = HOST === '0.0.0.0' ? 'localhost' : HOST;
+  console.log('====================================================');
+  console.log(' Tripo Web-to-App Cloud Converter');
+  console.log(` Listening : http://${shown}:${PORT}/`);
+  console.log(` Health    : http://${shown}:${PORT}/api/health`);
+  console.log(` Root      : ${P.ROOT}`);
+  console.log(` Can build : ${Object.entries(caps)
+    .filter(([k, v]) => k !== 'details' && v)
+    .map(([k]) => k)
+    .join(', ') || 'nothing (missing toolchains - see /api/health)'}`);
+  console.log('====================================================');
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[server] port ${PORT} is already in use. Stop the other instance or set PORT.`);
+    process.exit(1);
+  }
+  if (err.code === 'EACCES') {
+    console.error(`[server] not allowed to bind ${HOST}:${PORT}. Choose a port above 1024.`);
+    process.exit(1);
+  }
+  throw err;
+});
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    console.log(`\n[server] ${signal} received - shutting down`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5000).unref();
+  });
+}

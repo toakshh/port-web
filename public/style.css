@@ -675,3 +675,158 @@ input[type="text"]:focus {
 .hidden {
   display: none !important;
 }
+
+/* --- Degraded health state ------------------------------------------- */
+.status-degraded {
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+}
+.status-degraded .dot {
+  background-color: #f59e0b;
+  box-shadow: 0 0 10px #f59e0b;
+}
+
+/* --- Unavailable build targets ---------------------------------------- */
+.target-card.target-unavailable {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+.target-card.target-unavailable .target-content {
+  pointer-events: none;
+}
+
+/* --- Upload hint ------------------------------------------------------- */
+.drop-hint {
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.drop-hint code,
+.mode-sub code {
+  background-color: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+/* --- Live build log ---------------------------------------------------- */
+.log-panel {
+  margin-top: 1.75rem;
+  text-align: left;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background-color: rgba(15, 23, 42, 0.55);
+}
+
+.log-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--card-border);
+}
+
+.job-id-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #60a5fa;
+}
+
+.log-output {
+  margin: 0;
+  padding: 0.9rem;
+  max-height: 260px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.76rem;
+  line-height: 1.55;
+  color: #cbd5e1;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- Failed progress bar ------------------------------------------------ */
+.progress-bar-fill.progress-failed {
+  background: linear-gradient(90deg, var(--error), #f97316);
+  animation: none;
+}
+
+/* --- Partial-result note ------------------------------------------------ */
+.result-note {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #fbbf24;
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+/* --- Progress readout (percentage + timing) ---------------------------- */
+.progress-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.progress-percent {
+  font-size: 1.5rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main);
+  line-height: 1;
+}
+
+.progress-timing {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* --- Per-mode time estimates -------------------------------------------- */
+.mode-eta {
+  margin-left: auto;
+  margin-right: 26px; /* clear of the radio button in the corner */
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background-color: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--card-border);
+  cursor: help;
+}
+
+.mode-eta.mode-eta-measured {
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.35);
+  background-color: rgba(16, 185, 129, 0.1);
+}
+
+.mode-eta-note {
+  margin-top: 0.75rem;
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+#resDuration {
+  color: var(--text-muted);
+}

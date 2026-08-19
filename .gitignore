@@ -1,6 +1,12 @@
 node_modules/
+
+# Build caches and generated artifacts
 src-tauri/target/
 dist-builds/
+.build-workspace/
+.cargo-wsl-shim/
+
+# Runtime state of the converter service
 jobs/
 uploads/
-
+*.log

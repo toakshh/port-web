@@ -1,1 +1,6 @@
-build.js
+#!/bin/sh
+# Cross-platform launcher for the multi-platform build pipeline.
+# Kept as a real file (not a symlink) so Windows checkouts work too.
+set -e
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$DIR/build.js" "$@"

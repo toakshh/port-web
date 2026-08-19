@@ -1,57 +1,103 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const $ = (id) => document.getElementById(id);
+
   // DOM Elements
-  const healthBadge = document.getElementById('healthBadge');
-  const healthStatusText = document.getElementById('healthStatusText');
+  const healthBadge = $('healthBadge');
+  const healthStatusText = $('healthStatusText');
 
-  const convertForm = document.getElementById('convertForm');
-  const webBuildInput = document.getElementById('webBuild');
-  const dropZone = document.getElementById('dropZone');
-  const dropZoneContent = document.getElementById('dropZoneContent');
-  const fileInfo = document.getElementById('fileInfo');
-  const fileNameDisplay = document.getElementById('fileName');
-  const fileSizeDisplay = document.getElementById('fileSize');
-  const btnRemoveFile = document.getElementById('btnRemoveFile');
+  const convertForm = $('convertForm');
+  const webBuildInput = $('webBuild');
+  const dropZone = $('dropZone');
+  const dropZoneContent = $('dropZoneContent');
+  const fileInfo = $('fileInfo');
+  const fileNameDisplay = $('fileName');
+  const fileSizeDisplay = $('fileSize');
+  const btnRemoveFile = $('btnRemoveFile');
 
-  const appNameInput = document.getElementById('appName');
-  const appIdentifierInput = document.getElementById('appIdentifier');
-  const appLogoInput = document.getElementById('appLogo');
-  const btnBrowseLogo = document.getElementById('btnBrowseLogo');
-  const logoPreviewImg = document.getElementById('logoPreviewImg');
-  const logoPlaceholder = document.getElementById('logoPlaceholder');
-  const btnRemoveLogo = document.getElementById('btnRemoveLogo');
+  const appNameInput = $('appName');
+  const appIdentifierInput = $('appIdentifier');
+  const appLogoInput = $('appLogo');
+  const btnBrowseLogo = $('btnBrowseLogo');
+  const logoPreviewImg = $('logoPreviewImg');
+  const logoPlaceholder = $('logoPlaceholder');
+  const btnRemoveLogo = $('btnRemoveLogo');
 
-  const formSection = document.getElementById('formSection');
-  const statusSection = document.getElementById('statusSection');
-  const resultSection = document.getElementById('resultSection');
+  const formSection = $('formSection');
+  const statusSection = $('statusSection');
+  const resultSection = $('resultSection');
 
-  const statusTitle = document.getElementById('statusTitle');
-  const statusSubtitle = document.getElementById('statusSubtitle');
-  const progressBar = document.getElementById('progressBar');
+  const statusTitle = $('statusTitle');
+  const statusSubtitle = $('statusSubtitle');
+  const progressBar = $('progressBar');
+  const progressText = $('progressText');
+  const progressTiming = $('progressTiming');
+  const logOutput = $('logOutput');
+  const liveJobId = $('liveJobId');
+  const btnCancelWatch = $('btnCancelWatch');
 
-  const stepUpload = document.getElementById('stepUpload');
-  const stepExtract = document.getElementById('stepExtract');
-  const stepCompile = document.getElementById('stepCompile');
-  const stepFinalize = document.getElementById('stepFinalize');
+  const fastEta = $('fastEta');
+  const cleanEta = $('cleanEta');
+  const modeEtaNote = $('modeEtaNote');
 
-  const resJobId = document.getElementById('resJobId');
-  const dlZipBtn = document.getElementById('dlZipBtn');
-  const dlApkBtn = document.getElementById('dlApkBtn');
-  const dlExeBtn = document.getElementById('dlExeBtn');
-  const dlDmgBtn = document.getElementById('dlDmgBtn');
-  const btnConvertAnother = document.getElementById('btnConvertAnother');
+  const steps = {
+    upload: $('stepUpload'),
+    extract: $('stepExtract'),
+    compile: $('stepCompile'),
+    finalize: $('stepFinalize')
+  };
 
-  // Check Health Endpoint
+  const resJobId = $('resJobId');
+  const resultNote = $('resultNote');
+  const downloadButtons = {
+    zip: $('dlZipBtn'),
+    apk: $('dlApkBtn'),
+    exe: $('dlExeBtn'),
+    setup: $('dlSetupBtn'),
+    dmg: $('dlDmgBtn'),
+    ios: $('dlIosBtn')
+  };
+  const btnConvertAnother = $('btnConvertAnother');
+  const btnSubmit = $('btnSubmit');
+
+  let pollTimer = null;
+  let watching = null;
+
+  /* ----------------------------- health ----------------------------- */
+
   async function checkHealth() {
     try {
       const res = await fetch('/api/health');
-      if (res.ok) {
-        const data = await res.json();
-        healthBadge.className = 'health-badge status-online';
-        healthStatusText.textContent = 'API Online';
-        healthBadge.title = `Capabilities: Android (${data.capabilities.android ? 'Yes' : 'No'}), Windows (${data.capabilities.windows ? 'Yes' : 'No'})`;
-      } else {
-        throw new Error('Health check failed');
-      }
+      if (!res.ok) throw new Error('health check failed');
+      const data = await res.json();
+      const caps = data.capabilities || {};
+      const buildable = ['android', 'windows', 'mac', 'ios'].filter((k) => caps[k]);
+
+      healthBadge.className = `health-badge ${buildable.length ? 'status-online' : 'status-degraded'}`;
+      healthStatusText.textContent = buildable.length
+        ? `API Online — ${buildable.join(', ')}`
+        : 'API Online — no build toolchain';
+      healthBadge.title = buildable.length
+        ? `This host can build: ${buildable.join(', ')}`
+        : 'No target can be built on this host. Run "npm run doctor" on the server for the missing pieces.';
+
+      // Disable targets this host cannot produce, so nobody waits for a build
+      // that was never going to work.
+      document.querySelectorAll('input[name="targets"]').forEach((box) => {
+        const supported =
+          (box.value === 'android' && caps.android) ||
+          ((box.value === 'exe' || box.value === 'windows') && caps.windows) ||
+          (box.value === 'mac' && caps.mac) ||
+          (box.value === 'ios' && caps.ios);
+        box.disabled = !supported;
+        const card = box.closest('.target-card');
+        if (card) {
+          card.classList.toggle('target-unavailable', !supported);
+          card.title = supported ? '' : 'Not available on this server';
+        }
+        if (!supported) box.checked = false;
+      });
+      // Target availability may have just changed what is selected.
+      refreshEstimates();
     } catch (err) {
       healthBadge.className = 'health-badge status-loading';
       healthStatusText.textContent = 'API Offline';
@@ -59,11 +105,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   checkHealth();
 
-  // Drag and Drop Zip Upload Logic
+  /* --------------------------- file pickers -------------------------- */
+
   dropZone.addEventListener('click', (e) => {
-    if (e.target !== btnRemoveFile) {
-      webBuildInput.click();
-    }
+    if (e.target !== btnRemoveFile) webBuildInput.click();
   });
 
   dropZone.addEventListener('dragover', (e) => {
@@ -71,28 +116,23 @@ document.addEventListener('DOMContentLoaded', () => {
     dropZone.classList.add('dragover');
   });
 
-  dropZone.addEventListener('dragleave', () => {
-    dropZone.classList.remove('dragover');
-  });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 
   dropZone.addEventListener('drop', (e) => {
     e.preventDefault();
     dropZone.classList.remove('dragover');
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      if (file.name.endsWith('.zip')) {
-        webBuildInput.files = e.dataTransfer.files;
-        handleFileSelect(file);
-      } else {
-        alert('Please upload a valid .zip file containing your web app build.');
-      }
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      alert('Please upload a .zip archive containing your web app build.');
+      return;
     }
+    webBuildInput.files = e.dataTransfer.files;
+    handleFileSelect(file);
   });
 
   webBuildInput.addEventListener('change', () => {
-    if (webBuildInput.files && webBuildInput.files.length > 0) {
-      handleFileSelect(webBuildInput.files[0]);
-    }
+    if (webBuildInput.files && webBuildInput.files[0]) handleFileSelect(webBuildInput.files[0]);
   });
 
   function handleFileSelect(file) {
@@ -100,6 +140,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fileSizeDisplay.textContent = formatBytes(file.size);
     dropZoneContent.classList.add('hidden');
     fileInfo.classList.remove('hidden');
+    refreshEstimates();
   }
 
   btnRemoveFile.addEventListener('click', (e) => {
@@ -107,23 +148,22 @@ document.addEventListener('DOMContentLoaded', () => {
     webBuildInput.value = '';
     dropZoneContent.classList.remove('hidden');
     fileInfo.classList.add('hidden');
+    hideEstimates();
   });
 
-  // App Logo Upload & Preview Logic
   btnBrowseLogo.addEventListener('click', () => appLogoInput.click());
 
   appLogoInput.addEventListener('change', () => {
-    if (appLogoInput.files && appLogoInput.files.length > 0) {
-      const logoFile = appLogoInput.files[0];
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        logoPreviewImg.src = e.target.result;
-        logoPreviewImg.classList.remove('hidden');
-        logoPlaceholder.classList.add('hidden');
-        btnRemoveLogo.classList.remove('hidden');
-      };
-      reader.readAsDataURL(logoFile);
-    }
+    const logoFile = appLogoInput.files && appLogoInput.files[0];
+    if (!logoFile) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      logoPreviewImg.src = e.target.result;
+      logoPreviewImg.classList.remove('hidden');
+      logoPlaceholder.classList.add('hidden');
+      btnRemoveLogo.classList.remove('hidden');
+    };
+    reader.readAsDataURL(logoFile);
   });
 
   btnRemoveLogo.addEventListener('click', () => {
@@ -134,16 +174,92 @@ document.addEventListener('DOMContentLoaded', () => {
     btnRemoveLogo.classList.add('hidden');
   });
 
-  // Helper byte format
   function formatBytes(bytes) {
-    if (bytes === 0) return '0 Bytes';
+    if (!bytes) return '0 Bytes';
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
   }
 
-  // Form Submit Handler
+  function formatDuration(seconds) {
+    const total = Math.max(0, Math.round(seconds));
+    if (total < 60) return `${total}s`;
+    const minutes = Math.floor(total / 60);
+    const rest = total % 60;
+    if (minutes < 60) return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+  }
+
+  /* ---------------------------- estimates ---------------------------- */
+
+  const selectedTargets = () =>
+    Array.from(document.querySelectorAll('input[name="targets"]:checked')).map((cb) => cb.value);
+
+  function hideEstimates() {
+    fastEta.hidden = true;
+    cleanEta.hidden = true;
+    modeEtaNote.classList.add('hidden');
+  }
+
+  /**
+   * Ask the server how long each mode is likely to take for the chosen targets.
+   * The server bases this on how long previous builds on this host actually
+   * took, so it gets sharper with use rather than being a fixed guess.
+   */
+  async function refreshEstimates() {
+    const hasFile = webBuildInput.files && webBuildInput.files.length > 0;
+    const targets = selectedTargets();
+    if (!hasFile || targets.length === 0) {
+      hideEstimates();
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/estimate?targets=${encodeURIComponent(targets.join(','))}`);
+      if (!res.ok) throw new Error('estimate unavailable');
+      const data = await res.json();
+
+      const show = (el, info) => {
+        el.textContent = `~${info.human}`;
+        el.title =
+          info.basis === 'measured'
+            ? `Median of the last ${info.samples} builds on this server`
+            : info.samples > 0
+              ? `Based on ${info.samples} previous build(s) plus a default estimate`
+              : 'Default estimate - no builds recorded on this server yet';
+        el.classList.toggle('mode-eta-measured', info.basis === 'measured');
+        el.hidden = false;
+      };
+      show(fastEta, data.fast);
+      show(cleanEta, data.clean);
+
+      const notes = [];
+      if (data.fast.samples === 0 && data.clean.samples === 0) {
+        notes.push('Times are rough defaults until this server has completed a few builds.');
+      }
+      if (!data.cacheWarm) {
+        notes.push('No compilation cache yet, so the first fast build costs about as much as a clean one.');
+      }
+      if (data.queueAheadSeconds > 0) {
+        notes.push(
+          `Builds run one at a time — about ${formatDuration(data.queueAheadSeconds)} of work is ahead of you.`
+        );
+      }
+
+      modeEtaNote.textContent = notes.join(' ');
+      modeEtaNote.classList.toggle('hidden', notes.length === 0);
+    } catch (err) {
+      hideEstimates();
+    }
+  }
+
+  document.querySelectorAll('input[name="targets"]').forEach((box) => {
+    box.addEventListener('change', refreshEstimates);
+  });
+
+  /* ------------------------------ submit ----------------------------- */
+
   convertForm.addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -152,144 +268,234 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Collect target checkboxes
     const targetBoxes = document.querySelectorAll('input[name="targets"]:checked');
     if (targetBoxes.length === 0) {
-      alert('Please select at least one target platform.');
+      alert('Please select at least one target platform that this server can build.');
       return;
     }
-    const targets = Array.from(targetBoxes).map(cb => cb.value).join(',');
 
-    // Prepare FormData
+    const mode = (document.querySelector('input[name="buildMode"]:checked') || {}).value || 'fast';
+
     const formData = new FormData();
     formData.append('webBuild', webBuildInput.files[0]);
+    formData.append('targets', Array.from(targetBoxes).map((cb) => cb.value).join(','));
+    formData.append('mode', mode);
     if (appNameInput.value.trim()) formData.append('appName', appNameInput.value.trim());
     if (appIdentifierInput.value.trim()) formData.append('appIdentifier', appIdentifierInput.value.trim());
-    if (appLogoInput.files && appLogoInput.files.length > 0) {
-      formData.append('appLogo', appLogoInput.files[0]);
-    }
-    formData.append('targets', targets);
+    if (appLogoInput.files && appLogoInput.files[0]) formData.append('appLogo', appLogoInput.files[0]);
 
-    // Build Mode (Fast Hot-Swap vs Clean Rebuild)
-    const buildModeRadio = document.querySelector('input[name="buildMode"]:checked');
-    if (buildModeRadio && buildModeRadio.value === 'clean') {
-      formData.append('clean', 'true');
-    }
-
-    // Transition UI to Progress
-    formSection.classList.add('hidden');
-    statusSection.classList.remove('hidden');
-    resultSection.classList.add('hidden');
-
-    resetProgressUI();
-
-    // Start progress animation
-    let currentProgress = 15;
-    progressBar.style.width = `${currentProgress}%`;
-
-    const progressTimer = setInterval(() => {
-      if (currentProgress < 90) {
-        currentProgress += Math.floor(Math.random() * 5) + 2;
-        if (currentProgress > 90) currentProgress = 90;
-        progressBar.style.width = `${currentProgress}%`;
-
-        if (currentProgress > 25) setStepActive(stepExtract);
-        if (currentProgress > 55) setStepActive(stepCompile);
-        if (currentProgress > 80) setStepActive(stepFinalize);
-      }
-    }, 1500);
+    showStatus();
+    btnSubmit.disabled = true;
 
     try {
-      const response = await fetch('/api/convert', {
-        method: 'POST',
-        body: formData
-      });
+      const response = await fetch('/api/convert', { method: 'POST', body: formData });
+      const body = await response.json().catch(() => ({}));
 
-      clearInterval(progressTimer);
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Build request failed' }));
-        throw new Error(errorData.error || `Server responded with status ${response.status}`);
+      if (!response.ok && response.status !== 202) {
+        throw new Error(body.error || `Server responded with status ${response.status}`);
       }
 
-      const result = await response.json();
-
-      progressBar.style.width = '100%';
-      setStepActive(stepFinalize);
-
-      setTimeout(() => {
-        showResults(result);
-      }, 600);
-
+      watching = body.jobId;
+      liveJobId.textContent = body.jobId;
+      statusSubtitle.textContent =
+        mode === 'fast'
+          ? 'Swapping static/files into the shared app shell and compiling incrementally.'
+          : 'Rebuilding everything from your upload; the shared baseline will be updated on success.';
+      pollJob(body.jobId);
     } catch (err) {
-      clearInterval(progressTimer);
-      alert(`Conversion Failed: ${err.message}`);
-      statusSection.classList.add('hidden');
-      formSection.classList.remove('hidden');
+      stopPolling();
+      alert(`Conversion failed: ${err.message}`);
+      backToForm();
+    } finally {
+      btnSubmit.disabled = false;
     }
   });
 
-  function resetProgressUI() {
-    progressBar.style.width = '10%';
-    [stepUpload, stepExtract, stepCompile, stepFinalize].forEach(step => {
-      step.className = 'step-item';
-    });
-    stepUpload.className = 'step-item step-active';
-  }
+  /* ------------------------------ polling ---------------------------- */
 
-  function setStepActive(activeStep) {
-    const steps = [stepUpload, stepExtract, stepCompile, stepFinalize];
-    let found = false;
-    steps.forEach(step => {
-      if (step === activeStep) {
-        found = true;
-        step.className = 'step-item step-active';
-      } else if (!found) {
-        step.className = 'step-item step-done';
-      } else {
-        step.className = 'step-item';
+  function pollJob(jobId) {
+    stopPolling();
+    let ticks = 0;
+
+    const tick = async () => {
+      if (watching !== jobId) return;
+      ticks++;
+      try {
+        const [job, logs] = await Promise.all([
+          fetch(`/api/jobs/${jobId}`).then((r) => r.json()),
+          fetch(`/api/jobs/${jobId}/log`).then((r) => r.json()).catch(() => null)
+        ]);
+
+        if (logs && Array.isArray(logs.lines) && logs.lines.length > 0) {
+          logOutput.textContent = logs.lines.slice(-200).join('\n');
+          logOutput.scrollTop = logOutput.scrollHeight;
+        }
+
+        applyStage(job);
+
+        if (job.status === 'completed') {
+          stopPolling();
+          setProgress(100);
+          progressTiming.textContent = `Finished in ${formatDuration(job.durationSeconds || job.elapsedSeconds || 0)}`;
+          markStep('finalize', 'done');
+          setTimeout(() => showResults(job), 500);
+          return;
+        }
+        if (job.status === 'failed') {
+          stopPolling();
+          showFailure(job);
+          return;
+        }
+      } catch (err) {
+        // A transient network blip should not kill the watcher.
       }
+      pollTimer = setTimeout(tick, 1500);
+    };
+
+    tick();
+  }
+
+  function setProgress(percent) {
+    const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+    progressBar.style.width = `${clamped}%`;
+    progressText.textContent = `${clamped}%`;
+  }
+
+  function applyStage(job) {
+    // The server computes progress and ETA from the recorded duration of past
+    // builds, so every client shows the same honest number.
+    setProgress(job.progress != null ? job.progress : 5);
+
+    const elapsed = formatDuration(job.elapsedSeconds || 0);
+    if (job.status === 'queued') {
+      statusTitle.textContent = job.queuePosition
+        ? `Queued — position ${job.queuePosition}`
+        : 'Queued...';
+      progressTiming.textContent = 'Waiting for the build queue';
+      markStep('upload', 'active');
+      return;
+    }
+
+    statusTitle.textContent = 'Converting Web App...';
+
+    if (job.etaSeconds != null) {
+      const overrun = job.estimate && job.elapsedSeconds > job.estimate.seconds;
+      progressTiming.textContent = overrun
+        ? `Elapsed ${elapsed} — taking longer than the ${formatDuration(job.estimate.seconds)} estimate`
+        : `Elapsed ${elapsed} — about ${formatDuration(job.etaSeconds)} left`;
+    } else {
+      progressTiming.textContent = `Elapsed ${elapsed}`;
+    }
+
+    const stage = job.stage || job.status;
+    if (stage === 'extract') markStep('extract', 'active');
+    else if (stage === 'build') markStep('compile', 'active');
+    else if (stage === 'package' || stage === 'done') markStep('finalize', 'active');
+    else markStep('upload', 'active');
+  }
+
+  function markStep(key, state) {
+    const order = ['upload', 'extract', 'compile', 'finalize'];
+    const index = order.indexOf(key);
+    order.forEach((name, i) => {
+      const el = steps[name];
+      if (!el) return;
+      if (i < index) el.className = 'step-item step-done';
+      else if (i === index) el.className = `step-item step-${state === 'done' ? 'done' : 'active'}`;
+      else el.className = 'step-item';
     });
   }
 
-  function showResults(data) {
+  function stopPolling() {
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+
+  /* ------------------------------ views ------------------------------ */
+
+  function showStatus() {
+    formSection.classList.add('hidden');
+    resultSection.classList.add('hidden');
+    statusSection.classList.remove('hidden');
+    progressBar.classList.remove('progress-failed');
+    setProgress(2);
+    progressTiming.textContent = 'Uploading...';
+    logOutput.textContent = 'Uploading...';
+    liveJobId.textContent = '';
+    statusTitle.textContent = 'Uploading web build...';
+    markStep('upload', 'active');
+  }
+
+  function backToForm() {
+    watching = null;
+    stopPolling();
+    statusSection.classList.add('hidden');
+    resultSection.classList.add('hidden');
+    formSection.classList.remove('hidden');
+  }
+
+  btnCancelWatch.addEventListener('click', backToForm);
+
+  function showFailure(job) {
+    const detail = [job.error, ...(job.buildFailures || [])].filter(Boolean).join('\n');
+    alert(`Conversion failed:\n\n${detail || 'Unknown error'}\n\nThe full build log is shown on the page.`);
+    statusTitle.textContent = 'Conversion failed';
+    statusSubtitle.textContent = job.error || 'See the build log below.';
+    setProgress(100);
+    progressTiming.textContent = `Failed after ${formatDuration(job.durationSeconds || job.elapsedSeconds || 0)}`;
+    progressBar.classList.add('progress-failed');
+  }
+
+  function showResults(job) {
+    watching = null;
     statusSection.classList.add('hidden');
     resultSection.classList.remove('hidden');
+    progressBar.classList.remove('progress-failed');
 
-    resJobId.textContent = data.jobId || 'N/A';
-    dlZipBtn.href = data.downloadUrl || `/api/download/${data.jobId}`;
+    resJobId.textContent = job.jobId || 'N/A';
+    downloadButtons.zip.href = job.downloadUrl || `/api/download/${job.jobId}`;
 
-    // Reset individual buttons
-    dlApkBtn.classList.add('hidden');
-    dlExeBtn.classList.add('hidden');
-    dlDmgBtn.classList.add('hidden');
+    const took = job.durationSeconds || job.elapsedSeconds;
+    const resDuration = $('resDuration');
+    if (resDuration) {
+      resDuration.textContent = took
+        ? `Built in ${formatDuration(took)} (${job.mode === 'clean' ? 'clean rebuild' : 'fast hot-swap'})`
+        : '';
+    }
 
-    if (data.artifacts) {
-      if (data.artifacts.apk) {
-        dlApkBtn.href = data.artifacts.apk;
-        dlApkBtn.classList.remove('hidden');
+    const artifacts = job.artifacts || {};
+    for (const [key, button] of Object.entries(downloadButtons)) {
+      if (key === 'zip' || !button) continue;
+      if (artifacts[key]) {
+        button.href = artifacts[key];
+        button.classList.remove('hidden');
+      } else {
+        button.classList.add('hidden');
       }
-      if (data.artifacts.exe) {
-        dlExeBtn.href = data.artifacts.exe;
-        dlExeBtn.classList.remove('hidden');
-      }
-      if (data.artifacts.dmg) {
-        dlDmgBtn.href = data.artifacts.dmg;
-        dlDmgBtn.classList.remove('hidden');
-      }
+    }
+
+    // Be explicit when some requested target did not make it.
+    if (job.buildFailures && job.buildFailures.length > 0) {
+      resultNote.textContent = `Some targets did not complete: ${job.buildFailures.join('; ')}`;
+      resultNote.classList.remove('hidden');
+    } else {
+      resultNote.classList.add('hidden');
     }
   }
 
-  // Convert Another App Handler
   btnConvertAnother.addEventListener('click', () => {
-    resultSection.classList.add('hidden');
-    formSection.classList.remove('hidden');
-
-    // Reset inputs
+    backToForm();
     webBuildInput.value = '';
-    btnRemoveFile.click();
-    btnRemoveLogo.click();
+    dropZoneContent.classList.remove('hidden');
+    fileInfo.classList.add('hidden');
+    appLogoInput.value = '';
+    logoPreviewImg.src = '';
+    logoPreviewImg.classList.add('hidden');
+    logoPlaceholder.classList.remove('hidden');
+    btnRemoveLogo.classList.add('hidden');
     appNameInput.value = '';
     appIdentifierInput.value = '';
+    hideEstimates();
+    checkHealth();
   });
 });

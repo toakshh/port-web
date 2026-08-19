@@ -1,1 +1,0 @@
-"use strict";(globalThis.webpackChunkzimension=globalThis.webpackChunkzimension||[]).push([[2691],{58527:(h,n,i)=>{i.d(n,{Z:()=>e});var s=i(81171),a=i(46417);const e=(0,s.Z)((0,a.jsx)("path",{d:"M12 5.99 19.53 19H4.47L12 5.99M12 2 1 21h22L12 2zm1 14h-2v2h2v-2zm0-6h-2v4h2v-4z"}),"WarningAmberOutlined")}}]);

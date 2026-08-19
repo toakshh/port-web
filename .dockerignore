@@ -1,0 +1,9 @@
+node_modules
+.git
+jobs
+uploads
+dist-builds
+.build-workspace
+src-tauri/target
+src-tauri/gen/android/app/build
+*.log

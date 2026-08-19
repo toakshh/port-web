@@ -43,6 +43,7 @@
                 <div class="drop-icon">📦</div>
                 <p class="drop-title">Drag & drop your Web App ZIP build here</p>
                 <p class="drop-subtitle">or click to browse from your computer (zip containing index.html)</p>
+                <p class="drop-hint">Fast Hot-Swap also needs a <code>static/files/</code> folder inside the zip</p>
               </div>
               <div class="file-info hidden" id="fileInfo">
                 <span class="file-icon">📄</span>
@@ -134,8 +135,13 @@
                     <span class="mode-icon">⚡</span>
                     <span class="mode-name">Fast Hot-Swap</span>
                     <span class="badge badge-recommended">Recommended</span>
+                    <span class="mode-eta" id="fastEta" hidden></span>
                   </div>
-                  <span class="mode-sub">Fastest compilation (~10s). Re-uses pre-built target caches to update web assets.</span>
+                  <span class="mode-sub">
+                    Keeps the shared app shell and swaps <strong>only <code>static/files/</code></strong> from your
+                    zip, reusing the existing compile cache. Android is built for arm64 only.
+                    The shared baseline is left untouched.
+                  </span>
                 </div>
               </label>
 
@@ -145,11 +151,17 @@
                   <div class="mode-header">
                     <span class="mode-icon">🧹</span>
                     <span class="mode-name">Clean Full Rebuild</span>
+                    <span class="mode-eta" id="cleanEta" hidden></span>
                   </div>
-                  <span class="mode-sub">Fresh compilation (~1-2m). Purges target release caches and rebuilds all native packages.</span>
+                  <span class="mode-sub">
+                    Purges the compile cache and rebuilds from your <strong>entire</strong> zip, producing a
+                    universal Android APK, then <strong>permanently updates the shared baseline</strong> so later
+                    fast builds inherit the new common files.
+                  </span>
                 </div>
               </label>
             </div>
+            <p class="mode-eta-note hidden" id="modeEtaNote"></p>
           </div>
 
           <!-- Submit Button -->
@@ -165,15 +177,31 @@
           <div class="spinner"></div>
           <h2 id="statusTitle">Converting Web App...</h2>
           <p id="statusSubtitle">Extracting web build, initializing Tauri environment, and generating native binaries.</p>
+          <div class="progress-readout">
+            <span class="progress-percent" id="progressText">0%</span>
+            <span class="progress-timing" id="progressTiming">Estimating build time...</span>
+          </div>
           <div class="progress-bar-container">
             <div class="progress-bar-fill" id="progressBar"></div>
           </div>
           <div class="status-steps" id="statusSteps">
-            <div class="step-item step-active" id="stepUpload">1. Uploading web build & settings</div>
-            <div class="step-item" id="stepExtract">2. Extracting assets & configuring build</div>
+            <div class="step-item step-active" id="stepUpload">1. Uploading web build &amp; settings</div>
+            <div class="step-item" id="stepExtract">2. Extracting assets &amp; staging web files</div>
             <div class="step-item" id="stepCompile">3. Compiling native target packages</div>
-            <div class="step-item" id="stepFinalize">4. Signing & packaging output files</div>
+            <div class="step-item" id="stepFinalize">4. Signing &amp; packaging output files</div>
           </div>
+
+          <div class="log-panel">
+            <div class="log-panel-head">
+              <span>Build log</span>
+              <span class="job-id-chip" id="liveJobId"></span>
+            </div>
+            <pre class="log-output" id="logOutput">Waiting for the build to start...</pre>
+          </div>
+
+          <button type="button" class="btn-secondary btn-reset" id="btnCancelWatch">
+            ← Back to the form (the build keeps running)
+          </button>
         </div>
       </section>
 
@@ -186,6 +214,7 @@
 
           <div class="job-meta">
             <span>Job ID: <strong id="resJobId">job_12345</strong></span>
+            <span id="resDuration"></span>
           </div>
         </div>
 
@@ -204,12 +233,20 @@
               <span class="btn-icon">🤖</span> Download Android APK
             </a>
             <a id="dlExeBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
-              <span class="btn-icon">🪟</span> Download Windows EXE / Setup
+              <span class="btn-icon">🪟</span> Download Windows EXE
+            </a>
+            <a id="dlSetupBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
+              <span class="btn-icon">🧩</span> Download Windows Installer
             </a>
             <a id="dlDmgBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
               <span class="btn-icon">🍎</span> Download macOS DMG
             </a>
+            <a id="dlIosBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
+              <span class="btn-icon">📱</span> Download iOS Package
+            </a>
           </div>
+
+          <p class="result-note hidden" id="resultNote"></p>
         </div>
 
         <button type="button" class="btn-secondary btn-reset" id="btnConvertAnother">

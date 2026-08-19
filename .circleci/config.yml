@@ -5,6 +5,23 @@ orbs:
   win: circleci/windows@5.0.0
 
 jobs:
+  # Portability and safety checks. Deliberately needs no Rust, JDK or Android
+  # SDK, so it stays fast and catches regressions before the heavy jobs run.
+  test:
+    docker:
+      - image: cimg/node:20.11
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - run:
+          name: Environment report
+          command: npm run doctor || true
+      - run:
+          name: Self-test
+          command: npm test
+
   build-android:
     executor:
       name: android/ubuntu-2204-cimg
@@ -14,25 +31,28 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Install Node.js & Dependencies
+          name: Install Node.js & dependencies
           command: |
             curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
             sudo apt-get install -y nodejs build-essential libssl-dev pkg-config zipalign
             npm ci
       - run:
-          name: Install Rust Toolchain & Android Targets
+          name: Install Rust toolchain & Android targets
           command: |
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             source "$HOME/.cargo/env"
             rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
       - run:
-          name: Build Signed Android APK
+          name: Build signed Android APK
           command: |
             source "$HOME/.cargo/env"
-            node build.js --android
+            node build.js --android --mode clean
       - store_artifacts:
           path: dist-builds/android/tripo-app-signed.apk
           destination: android/tripo-app-signed.apk
+      - store_artifacts:
+          path: dist-builds/build-result.json
+          destination: android/build-result.json
 
   build-windows:
     executor:
@@ -46,22 +66,28 @@ jobs:
       - run:
           name: Install Rust
           command: |
-            choco install rustup.active -y
+            choco install rustup.install -y
             rustup target add x86_64-pc-windows-msvc
       - run:
-          name: Build Windows Application
+          name: Build Windows application
           command: |
             npm ci
-            node build.js --exe
+            node build.js --exe --mode clean
       - store_artifacts:
           path: dist-builds/windows/app.exe
           destination: windows/app.exe
       - store_artifacts:
           path: dist-builds/windows/tripo-setup.exe
           destination: windows/tripo-setup.exe
+      - store_artifacts:
+          path: dist-builds/build-result.json
+          destination: windows/build-result.json
 
 workflows:
   build-all-platforms:
     jobs:
-      - build-android
-      - build-windows
+      - test
+      - build-android:
+          requires: [test]
+      - build-windows:
+          requires: [test]

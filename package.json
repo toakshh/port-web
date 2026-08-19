@@ -1,31 +1,54 @@
 {
-  "name": "tripo-app",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "build": "node build.js",
-    "start": "node server.js",
-    "tauri": "tauri",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "name": "tripo-web-to-app",
+  "version": "1.1.0",
+  "description": "Cloud service and CLI that turns a web build into native Android, Windows, macOS and iOS apps via Tauri",
+  "main": "server.js",
   "type": "commonjs",
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.11.4"
+  "license": "ISC",
+  "engines": {
+    "node": ">=18.17"
   },
-  "optionalDependencies": {
-    "@tauri-apps/cli-win32-x64-msvc": "^2.11.4",
-    "@tauri-apps/cli-linux-x64-gnu": "^2.11.4",
-    "@tauri-apps/cli-darwin-x64": "^2.11.4",
-    "@tauri-apps/cli-darwin-arm64": "^2.11.4"
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "build": "node build.js",
+    "build:android": "node build.js --android",
+    "build:exe": "node build.js --exe",
+    "build:mac": "node build.js --mac",
+    "build:all": "node build.js --all",
+    "doctor": "node scripts/doctor.js",
+    "test": "node scripts/selftest.js",
+    "tauri": "tauri"
   },
+  "keywords": [
+    "tauri",
+    "web-to-app",
+    "android",
+    "apk",
+    "windows",
+    "installer",
+    "converter"
+  ],
   "dependencies": {
     "adm-zip": "^0.6.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "multer": "^2.2.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  },
+  "optionalDependencies": {
+    "@tauri-apps/cli-darwin-arm64": "^2.11.4",
+    "@tauri-apps/cli-darwin-x64": "^2.11.4",
+    "@tauri-apps/cli-linux-arm-gnueabihf": "^2.11.4",
+    "@tauri-apps/cli-linux-arm64-gnu": "^2.11.4",
+    "@tauri-apps/cli-linux-arm64-musl": "^2.11.4",
+    "@tauri-apps/cli-linux-x64-gnu": "^2.11.4",
+    "@tauri-apps/cli-linux-x64-musl": "^2.11.4",
+    "@tauri-apps/cli-win32-arm64-msvc": "^2.11.4",
+    "@tauri-apps/cli-win32-ia32-msvc": "^2.11.4",
+    "@tauri-apps/cli-win32-x64-msvc": "^2.11.4"
   }
 }
