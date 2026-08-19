@@ -76,10 +76,30 @@ recorded, so the median stays meaningful.
 Progress percentage and ETA are computed **server-side** in `progressFor()` / `publicJob()` and
 returned on every job — clients render, they do not invent. Do not reintroduce a client-side timer.
 
-## Sharp edges
+## Concurrency (build slots)
 
-- Builds are **serialised** by the server's queue. They share one Rust target cache and one
-  generated Android project; running two at once corrupts both.
+`BUILD_CONCURRENCY` (default 2) builds run at once, each in its own slot under
+`.build-workspace/slots/<n>/` — a private project copy with its own staged `dist/` and its own
+`src-tauri/gen/android`. `build.js --slot <id>` selects one; without it the build runs from the repo.
+
+The Rust **target directory is shared** across slots on purpose (`CARGO_TARGET_DIR`): Cargo locks it,
+so concurrent compiles serialise instead of corrupting, and every slot inherits the warm dependency
+cache instead of a cold multi-minute first build. Everything that is not Cargo — staging, Gradle,
+NSIS, signing — runs fully in parallel. Do not give slots private target dirs to "fix" the lock
+contention; that trades ~10s of waiting for ~2min of cold rebuilds and gigabytes per slot.
+
+The first build in a newly created slot is ~45s rather than ~12s while that slot's `app` artifacts
+are produced. This is expected, not a regression.
+
+## Cancellation
+
+`POST /api/jobs/:id/cancel` and `/api/jobs/cancel-all`, or `npm run jobs -- cancel <id>`.
+A running build's whole process tree must die — `build.js` spawns the Tauri CLI, which spawns cargo,
+rustc, the linker, Gradle and makensis. POSIX uses `detached: true` plus a negative-pid group signal;
+Windows uses `taskkill /T /F`. Killing only the direct child leaves orphans holding the slot's files.
+Cancelled jobs get status `cancelled`, deliberately distinct from `failed`.
+
+## Sharp edges
 - `src-tauri/gen/android` is tracked and bakes in the bundle identifier. `build.js` re-runs
   `tauri android init` only when the requested identifier differs from the generated one, which does
   dirty those tracked files — expected, they are generated code.

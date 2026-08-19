@@ -384,6 +384,71 @@ async function testBuildSpeedConfig() {
   });
 }
 
+async function testSlots() {
+  console.log('\nbuild slots (concurrency isolation)');
+
+  const slots = require('../lib/slots');
+
+  await test('the pool hands out distinct slots and reuses them once released', async () => {
+    const pool = slots.createPool(2);
+    assert.strictEqual(pool.size, 2);
+    const a = await pool.acquire();
+    const b = await pool.acquire();
+    assert.notStrictEqual(a, b, 'two concurrent jobs must not share a slot');
+    assert.strictEqual(pool.available, 0);
+    assert.strictEqual(pool.busy, 2);
+
+    // A third request must wait rather than double-book a slot.
+    let third = null;
+    pool.acquire().then((id) => {
+      third = id;
+    });
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(third, null, 'a third job must wait for a free slot');
+
+    pool.release(a);
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(third, a, 'the waiting job should get the released slot');
+  });
+
+  await test('releasing a slot twice cannot duplicate it', async () => {
+    const pool = slots.createPool(1);
+    const id = await pool.acquire();
+    pool.release(id);
+    pool.release(id);
+    assert.strictEqual(pool.available, 1, 'a double release must not create a phantom slot');
+  });
+
+  await test('a slot is a self-contained project pointing at its own assets', () => {
+    const ctx = slots.prepareSlot('selftest');
+    try {
+      assert.ok(fsx.isFile(path.join(ctx.srcTauri, 'Cargo.toml')), 'slot has no Cargo.toml');
+      assert.ok(fsx.isDir(path.join(ctx.srcTauri, 'src')), 'slot has no src/');
+      assert.ok(fsx.isFile(path.join(ctx.projectDir, 'package.json')), 'slot has no package.json');
+
+      const conf = fsx.readJson(ctx.tauriConf);
+      assert.strictEqual(conf.build.frontendDist, '../dist',
+        'a slot must compile its own staged assets, not another slot\'s');
+
+      // The generated Android project must live inside the slot, or two
+      // concurrent Android builds would overwrite each other.
+      assert.ok(ctx.genAndroid.startsWith(ctx.projectDir), 'gen/android escapes the slot');
+      assert.ok(ctx.distDir.startsWith(ctx.projectDir), 'staged dist escapes the slot');
+
+      // The target dir is shared on purpose - see lib/slots.js.
+      assert.strictEqual(ctx.targetDir, P.TAURI_TARGET);
+    } finally {
+      fsx.rmrf(ctx.projectDir);
+    }
+  });
+
+  await test('the repo context is used when no slot is requested', () => {
+    const ctx = slots.repoContext();
+    assert.strictEqual(ctx.projectDir, P.ROOT);
+    assert.strictEqual(ctx.distDir, P.WORKSPACE_DIST);
+  });
+}
+
 async function testEstimates() {
   console.log('\nestimates');
 
@@ -717,6 +782,57 @@ async function testHttpApi() {
       assert.ok(res.status >= 400);
     });
 
+    await test('a queued job can be cancelled', async () => {
+      const zip = new AdmZip();
+      zip.addFile('index.html', Buffer.from('<html></html>'));
+      zip.addFile('static/files/payload.bin', Buffer.from('x'));
+
+      // Fill the slots, then queue one more so it is definitely still pending.
+      const submit = async () => {
+        const form = new FormData();
+        form.append('webBuild', new Blob([zip.toBuffer()]), 'build.zip');
+        form.append('targets', 'exe');
+        const res = await fetch(`${base}/api/convert`, { method: 'POST', body: form });
+        return (await res.json()).jobId;
+      };
+
+      const health = await (await fetch(`${base}/api/health`)).json();
+      const slotCount = (health.queue && health.queue.concurrency) || 1;
+      const ids = [];
+      for (let i = 0; i < slotCount + 1; i++) ids.push(await submit());
+      const lastId = ids[ids.length - 1];
+
+      const cancel = await fetch(`${base}/api/jobs/${lastId}/cancel`, { method: 'POST' });
+      const body = await cancel.json().catch(() => ({}));
+      assert.strictEqual(cancel.status, 200, JSON.stringify(body));
+      assert.strictEqual(body.cancelled, true);
+
+      const job = await (await fetch(`${base}/api/jobs/${lastId}`)).json();
+      assert.strictEqual(job.status, 'cancelled', 'the job should report cancelled, not failed');
+
+      // Clean up so the remaining tests are not waiting behind these builds.
+      await fetch(`${base}/api/jobs/cancel-all`, { method: 'POST' });
+    });
+
+    await test('cancelling an unknown job is a 404, not a crash', async () => {
+      const res = await fetch(`${base}/api/jobs/job_1_zzz/cancel`, { method: 'POST' });
+      assert.strictEqual(res.status, 404);
+    });
+
+    await test('cancel-all reports how many it stopped', async () => {
+      const res = await fetch(`${base}/api/jobs/cancel-all`, { method: 'POST' });
+      assert.strictEqual(res.status, 200);
+      const body = await res.json();
+      assert.ok(typeof body.cancelled === 'number', 'cancel-all must report a count');
+    });
+
+    await test('health reports the slot pool', async () => {
+      const body = await (await fetch(`${base}/api/health`)).json();
+      assert.ok(body.queue, 'health must report queue state');
+      assert.ok(body.queue.concurrency >= 1, 'concurrency must be reported');
+      assert.ok('slotsFree' in body.queue, 'free slot count must be reported');
+    });
+
     await test('GET /api/jobs lists the job', async () => {
       const body = await (await fetch(`${base}/api/jobs`)).json();
       assert.ok(body.jobs.some((j) => j.jobId === jobId));
@@ -738,6 +854,7 @@ async function testHttpApi() {
     await testToolchain();
     await testDocumentation();
     await testBuildSpeedConfig();
+    await testSlots();
     await testEstimates();
     await testBuildModes();
     await testHttpApi();

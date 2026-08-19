@@ -3,7 +3,8 @@
 Everything you can run, what each flag does, and what has to be installed first.
 
 Quick links: [Setup](#setup) · [Requirements](#requirements) · [Commands](#commands) ·
-[Build flags](#build-flags) · [Server](#server) · [HTTP API](#http-api) ·
+[Build flags](#build-flags) · [Server](#server) · [Concurrency](#concurrency) ·
+[Managing builds](#managing-builds) · [HTTP API](#http-api) ·
 [Environment variables](#environment-variables) · [Troubleshooting](#troubleshooting)
 
 ---
@@ -125,6 +126,9 @@ Rust *itself* during a build is opt-in — set `AUTO_INSTALL_TOOLCHAIN=1`, or ju
 | `npm run build:all` | Everything this host supports |
 | `./build <flags>` | The build pipeline directly (macOS/Linux) |
 | `build.cmd <flags>` | The build pipeline directly (Windows) |
+| `npm run jobs` | List running/queued/finished builds on the service |
+| `npm run jobs -- <cmd>` | Inspect, follow or stop a build (see [Managing builds](#managing-builds)) |
+| `npm run cancel <id>` | Stop one build |
 
 `./build`, `build.cmd` and `npm run build --` are the same program; use whichever fits your shell.
 They work from any directory — every path is derived from the repository location.
@@ -201,6 +205,7 @@ built by default — the MSI added about 12s per build and was never downloaded.
 | Flag | Meaning |
 | ---- | ------- |
 | `--out <dir>` | Artifact output directory. Default `dist-builds/` |
+| `--slot <id>` | Build in an isolated slot (see [Concurrency](#concurrency)). The server sets this; a plain CLI build does not need it |
 | `--no-wsl` | Never delegate a Windows build to WSL |
 | `--help`, `-h` | Usage |
 
@@ -254,8 +259,71 @@ Then open <http://localhost:3000>. Upload a ZIP, pick targets and a mode, and do
 The dashboard shows an estimated time for each mode before you commit, and a live percentage and
 ETA while the build runs.
 
-Builds run in a background queue, **one at a time** — they share a single Rust compile cache and one
-generated Android project, so running two at once would corrupt both.
+Builds run in a background queue. Up to `BUILD_CONCURRENCY` of them run at once (default 2), each in
+its own isolated slot — see [Concurrency](#concurrency).
+
+---
+
+## Concurrency
+
+Several people can build at once. Each build runs in its own **slot** — a private project directory
+holding that build's staged web assets and its own generated Android project — so two users' files
+can never mix. `BUILD_CONCURRENCY` sets how many run at a time (default `2`); anything beyond that
+queues, and the queue position and wait are reported to the client.
+
+```bash
+BUILD_CONCURRENCY=4 npm start
+```
+
+Slots live in `.build-workspace/slots/<n>/`. The Rust **target directory is shared** between them on
+purpose: Cargo locks it, so concurrent compiles wait for each other instead of corrupting anything,
+and every slot inherits the same warm dependency cache rather than paying a cold multi-minute build
+on first use. Everything that is not Cargo — staging, Gradle, NSIS, signing, packaging — runs fully
+in parallel.
+
+Practical consequences:
+
+- The **first** build in a newly created slot is slower (roughly 45s instead of 12s) while that
+  slot's own `app` crate artifacts are produced. It is fast from then on.
+- Raising concurrency past the number of CPU cores will not help; compiles will just queue on the
+  Cargo lock.
+- Each slot costs a few hundred MB of disk for its project copy and generated Android project.
+
+---
+
+## Managing builds
+
+`npm run jobs` talks to the running service, so it works locally or against a remote host with
+`--url`.
+
+| Command | Purpose |
+| ------- | ------- |
+| `npm run jobs` | List recent jobs and the queue |
+| `npm run jobs -- show <id>` | Everything known about one job |
+| `npm run jobs -- logs <id>` | Tail that job's build log |
+| `npm run jobs -- watch <id>` | Follow a job until it finishes |
+| `npm run jobs -- cancel <id>` | Stop one running or queued build |
+| `npm run jobs -- cancel --all` | Stop everything running and queued |
+
+| Option | Purpose |
+| ------ | ------- |
+| `--url <base>` | Service address. Default `http://127.0.0.1:3000` (or `$CONVERTER_URL`) |
+| `--json` | Raw JSON instead of a table |
+| `--help`, `-h` | Usage |
+
+```bash
+npm run jobs
+```
+
+```bash
+npm run jobs -- cancel --all
+```
+
+Cancelling a **running** build kills its whole process tree — Cargo, rustc, the linker, Gradle and
+makensis — then frees its slot for the next queued job. Cancelling a **queued** build just removes
+it. Either way the job ends up with status `cancelled`, distinct from `failed`.
+
+A local `./build` run has no server involved: stop it with Ctrl+C.
 
 ---
 
@@ -269,6 +337,8 @@ generated Android project, so running two at once would corrupt both.
 | `GET` | `/api/jobs` | Recent jobs |
 | `GET` | `/api/jobs/:jobId` | Status, stage, progress, ETA, artifacts |
 | `GET` | `/api/jobs/:jobId/log` | Build log tail |
+| `POST` | `/api/jobs/:jobId/cancel` | Stop one running or queued build |
+| `POST` | `/api/jobs/cancel-all` | Stop everything running and queued |
 | `GET` | `/api/download/:jobId` | All artifacts as one ZIP |
 | `GET` | `/api/download/:jobId?file=apk\|exe\|setup\|dmg\|ios\|zip` | A single artifact |
 
@@ -311,6 +381,8 @@ curl -O -J "http://localhost:3000/api/download/job_1234567890_abcde?file=apk"
 | `HOST` | `0.0.0.0` | Bind address |
 | `MAX_UPLOAD_MB` | `500` | Upload size limit |
 | `JOB_RETENTION` | `20` | Finished jobs kept on disk |
+| `BUILD_CONCURRENCY` | `2` | How many builds run at once, each in its own slot |
+| `CONVERTER_URL` | `http://127.0.0.1:$PORT` | Service address used by the `jobs` CLI |
 | `BASELINE_DIST` | `./dist` | The shared baseline web build |
 | `BUILD_WORKSPACE` | `./.build-workspace` | Scratch area Tauri compiles from |
 | `DIST_BUILDS` | `./dist-builds` | CLI artifact output |
