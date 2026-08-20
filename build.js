@@ -91,6 +91,9 @@ Speed:
   --no-installer         Produce the bare executable only, skipping the
                          installer step (the quickest possible build)
       (--no-bundle is an alias)
+  --installer-only       Ship only the Windows setup installer; the bare
+                         app.exe is built but not published
+      (--setup-only is an alias)
   --bundles <list>       Desktop bundle formats (default: nsis on Windows).
                          e.g. --bundles nsis,msi
   --abis <list>          Android ABIs to compile. Fast mode builds aarch64
@@ -138,6 +141,8 @@ function parseArgs(argv) {
     // null = auto: Android immersive on, desktop windowed.
     fullscreen: null,
     installer: true,
+    // true = publish only the NSIS setup, not the bare app.exe.
+    installerOnly: false,
     bundles: null,
     abis: null
   };
@@ -182,6 +187,8 @@ function parseArgs(argv) {
       case '--slot': opts.slot = needsValue(i, arg); i++; break;
       case '--no-installer':
       case '--no-bundle': opts.installer = false; break;
+      case '--setup-only':
+      case '--installer-only': opts.installerOnly = true; break;
       case '--bundles': opts.bundles = splitList(needsValue(i, arg)); i++; break;
       case '--abis':
       case '--android-targets': opts.abis = splitList(needsValue(i, arg)); i++; break;
@@ -194,6 +201,10 @@ function parseArgs(argv) {
 
   if (opts.mode !== 'fast' && opts.mode !== 'clean') {
     logError(`Unknown build mode "${opts.mode}" (expected fast or clean)`);
+    process.exit(2);
+  }
+  if (opts.installerOnly && !opts.installer) {
+    logError('--installer-only and --no-installer cannot be combined: one keeps only the installer, the other builds none.');
     process.exit(2);
   }
   return opts;
@@ -429,6 +440,21 @@ function generateIcons() {
     logWarn('Icon generation produced no usable files - keeping the default icon set.');
     return null;
   }
+
+  // Force the icon to actually be re-embedded. tauri-build embeds the .ico from
+  // its build script but never declares it as a rerun trigger, and the path is
+  // identical on every build - so with a warm cache Cargo skips the script and
+  // the previous icon survives. src-tauri/build.rs declares this env var as a
+  // trigger; changing its value is what makes a new icon take effect.
+  const ico = path.join(outDir, 'icon.ico');
+  if (fsx.isFile(ico)) {
+    process.env.TRIPO_ICON_HASH = require('crypto')
+      .createHash('sha256')
+      .update(fs.readFileSync(ico))
+      .digest('hex')
+      .slice(0, 16);
+  }
+
   logSuccess(`Generated ${produced.length} icon variant(s) in ${outDir}`);
   return produced;
 }
@@ -651,6 +677,41 @@ const ABI_JNI_DIRS = {
  * Pruning first is what makes Fast (one ABI) and Clean (all four) able to
  * follow each other in any order.
  */
+/**
+ * Install the generated launcher icons into the Android project.
+ *
+ * `tauri icon -o <dir>` writes the Android mipmaps to `<dir>/android/`, and
+ * nothing ever reads them from there. Android takes its launcher icon from
+ * `gen/android/app/src/main/res/mipmap-*`, and `bundle.icon` - which is what
+ * the config overlay sets - only drives desktop icons. Without this copy the
+ * uploaded logo is generated, ignored, and every APK ships Tauri's default.
+ *
+ * Must run after `android init`, which regenerates res/ with the stock icons.
+ */
+function applyAndroidIcons() {
+  if (!ctx.iconsDir) return;
+  const src = path.join(ctx.iconsDir, 'android');
+  if (!fsx.isDir(src)) return;
+
+  const res = path.join(ctx.genAndroid, 'app', 'src', 'main', 'res');
+  if (!fsx.isDir(res)) {
+    logWarn('Android res/ directory not found; launcher icons were not replaced.');
+    return;
+  }
+
+  let copied = 0;
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const from = path.join(src, entry.name);
+    const to = fsx.ensureDir(path.join(res, entry.name));
+    for (const file of fs.readdirSync(from)) {
+      fsx.copyPath(path.join(from, file), path.join(to, file));
+      copied++;
+    }
+  }
+  if (copied > 0) logSuccess(`Applied ${copied} Android launcher icon file(s) from the uploaded logo`);
+}
+
 function pruneAndroidJniLibs(abis) {
   const jniRoot = path.join(ctx.genAndroid, 'app', 'src', 'main', 'jniLibs');
   if (!fsx.isDir(jniRoot)) return;
@@ -828,6 +889,7 @@ if (opts.android) {
     }
     patchBuildTaskKt();
     if (androidImmersive()) patchAndroidFullscreen();
+    applyAndroidIcons();
     pruneAndroidJniLibs(abis);
 
     let ok = timed('android compile + package', () =>
@@ -838,6 +900,7 @@ if (opts.android) {
       runTauri('android', 'init', '--ci', ...cfg);
       patchBuildTaskKt();
       if (androidImmersive()) patchAndroidFullscreen();
+      applyAndroidIcons();
       pruneAndroidJniLibs(abis);
       ok = timed('android compile + package (retry)', () =>
         runTauri('android', 'build', '--apk', ...abiArgs, ...cfg).ok
@@ -946,7 +1009,12 @@ if (opts.exe) {
       }
     }
 
-    if (exe) {
+    if (opts.installerOnly) {
+      // The raw binary is not shippable on its own anyway - it needs the
+      // WebView2 bootstrapper and the sidecar files the installer lays down.
+      log('Installer-only: the bare app.exe is not published for this build.');
+      if (!exe) failures.push('windows: no freshly built .exe was found');
+    } else if (exe) {
       const dest = path.join(outDir, 'windows', 'app.exe');
       fs.copyFileSync(exe, dest);
       results.windows = dest;
@@ -1013,7 +1081,10 @@ if (opts.ios) {
 
 /* ---------------------------- Summary ---------------------------- */
 
-const produced = ['android', 'windows', 'mac', 'ios'].filter((k) => results[k]);
+// windowsSetup counts as a Windows result in its own right: --installer-only
+// deliberately publishes the setup and no app.exe, and that is a success, not
+// a build that produced nothing.
+const produced = ['android', 'windows', 'windowsSetup', 'mac', 'ios'].filter((k) => results[k]);
 
 if (produced.length > 0) promoteBaseline();
 

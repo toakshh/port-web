@@ -311,7 +311,9 @@ async function runJob(job) {
     const args = ['--mode', job.mode, '--web-src', webDir, '--out', outDir, '--slot', String(job.slot)];
     for (const target of job.targets) {
       if (target === 'android') args.push('--android');
-      else if (target === 'exe' || target === 'windows') args.push('--exe');
+      // Windows ships as the setup installer only. The bare app.exe cannot be
+      // distributed on its own - it needs the files the installer lays down.
+      else if (target === 'exe' || target === 'windows') args.push('--exe', '--installer-only');
       else if (target === 'mac' || target === 'dmg') args.push('--mac');
       else if (target === 'ios') args.push('--ios');
     }

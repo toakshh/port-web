@@ -191,9 +191,11 @@ These are applied through a Tauri config overlay, so `tauri.conf.json`, `package
 | Flag | Meaning |
 | ---- | ------- |
 | `--no-installer` | Bare executable only, skipping the installer step (the quickest build) |
+| `--installer-only` | Ship only the Windows setup installer; the bare `app.exe` is not published |
 | `--bundles <list>` | Desktop bundle formats. Default `nsis`. e.g. `--bundles nsis,msi` |
 | `--abis <list>` | Android ABIs. Fast builds `aarch64`; clean builds all four. `--abis all` for universal |
 | `--no-bundle` | Alias for `--no-installer` |
+| `--setup-only` | Alias for `--installer-only` |
 | `--android-targets <list>` | Alias for `--abis` |
 
 Valid ABIs: `aarch64`, `armv7`, `i686`, `x86_64`, or `all`.

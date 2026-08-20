@@ -504,6 +504,47 @@ async function testAppRuntime() {
   });
 }
 
+async function testIcons() {
+  console.log('\nicons and windows packaging');
+
+  const source = fs.readFileSync(path.join(P.ROOT, 'build.js'), 'utf8');
+
+  await test('the uploaded icon reaches the Android project', () => {
+    // `tauri icon -o <dir>` writes the mipmaps to <dir>/android/, which nothing
+    // reads. Android takes its launcher icon from gen/android/app/src/main/res,
+    // and bundle.icon only drives desktop icons - so without this copy every
+    // APK shipped Tauri's default icon.
+    assert.match(source, /function applyAndroidIcons/, 'the Android icon copy is gone');
+    const calls = (source.match(/applyAndroidIcons\(\)/g) || []).length;
+    assert.ok(calls >= 2, `expected the copy on both android init paths, found ${calls}`);
+  });
+
+  await test('a changed icon forces the Windows icon to be re-embedded', () => {
+    // tauri-build embeds the .ico from its build script but never declares it
+    // as a rerun trigger, and the path is identical on every build. With a warm
+    // cache Cargo skipped the script and kept the previous icon - reproduced by
+    // building magenta, rebuilding cyan, and reading the icon back out of the
+    // .exe: it was still magenta.
+    const buildRs = fs.readFileSync(path.join(P.ROOT, 'src-tauri', 'build.rs'), 'utf8');
+    assert.match(buildRs, /rerun-if-env-changed=TRIPO_ICON_HASH/,
+      'build.rs no longer declares the icon rerun trigger; icons go stale in fast mode');
+    assert.match(source, /TRIPO_ICON_HASH/,
+      'build.js no longer sets the icon hash, so the trigger value never changes');
+  });
+
+  await test('--installer-only ships the setup and still counts as a success', () => {
+    assert.match(source, /installerOnly/, 'the installer-only option is gone');
+    // windowsSetup must count as a produced target, or an installer-only build
+    // reports "No build target completed successfully" and fails the job.
+    assert.match(source, /'windowsSetup'/, 'windowsSetup is not counted as a produced target');
+  });
+
+  await test('--installer-only and --no-installer are rejected together', () => {
+    assert.match(source, /installerOnly && !opts\.installer/,
+      'the contradictory flag combination is no longer caught');
+  });
+}
+
 async function testSlots() {
   console.log('\nbuild slots (concurrency isolation)');
 
@@ -974,6 +1015,7 @@ async function testHttpApi() {
     await testToolchain();
     await testDocumentation();
     await testBuildSpeedConfig();
+    await testIcons();
     await testSlots();
     await testAppRuntime();
     await testEstimates();
