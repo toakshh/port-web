@@ -310,7 +310,11 @@ async function testDocumentation() {
   await test('every documented API route exists in the server', () => {
     const docs = fs.readFileSync(commandsPath, 'utf8');
     const server = fs.readFileSync(path.join(P.ROOT, 'server.js'), 'utf8');
-    const routes = [...new Set((docs.match(/`?\/api\/[a-z]+/gi) || []).map((r) => r.replace('`', '')))];
+    // The lookbehind keeps npm package paths out of the route list:
+    // "@tauri-apps/api/webviewWindow" contains "/api/..." but is not a route.
+    // A real route is preceded by a backtick, a slash or a port (":3000/api/..."),
+    // never by a letter.
+    const routes = [...new Set(docs.match(/(?<![A-Za-z])\/api\/[a-z]+/g) || [])];
     assert.ok(routes.length >= 5, `expected several documented routes, found ${routes.length}`);
 
     const missing = routes.filter((route) => !server.includes(`'${route}`));
@@ -380,6 +384,87 @@ async function testBuildSpeedConfig() {
       conf.build.frontendDist,
       '../.build-workspace/dist',
       'frontendDist must stay on the workspace or an upload can destroy the committed baseline'
+    );
+  });
+}
+
+async function testAppRuntime() {
+  console.log('\napp runtime (fullscreen + exit)');
+
+  const libRs = fs.readFileSync(path.join(P.ROOT, 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  const cargo = fs.readFileSync(path.join(P.ROOT, 'src-tauri', 'Cargo.toml'), 'utf8');
+  const conf = fsx.readJson(path.join(P.ROOT, 'src-tauri', 'tauri.conf.json'));
+  const source = fs.readFileSync(path.join(P.ROOT, 'build.js'), 'utf8');
+
+  await test('the web layer can reach the native bridge', () => {
+    // The wrapped build is pre-compiled and cannot import the Tauri packages,
+    // so window.__TAURI__ is the only way it can call a command.
+    assert.strictEqual(conf.app.withGlobalTauri, true,
+      'withGlobalTauri must stay enabled or exit_app becomes uncallable');
+  });
+
+  await test('exit_app is defined and registered', () => {
+    assert.match(libRs, /#\[tauri::command\][\s\S]{0,120}fn exit_app/, 'exit_app command is gone');
+    assert.match(libRs, /generate_handler!\[[^\]]*exit_app/, 'exit_app is not in the invoke handler');
+  });
+
+  await test('exit_app ends the process so the exit code survives', () => {
+    // AppHandle::exit alone does not carry the status code through - verified by
+    // observing exit code 0 when 7 was requested.
+    assert.match(libRs, /std::process::exit\(code\)/,
+      'the explicit process exit is gone; exit codes will silently become 0');
+    assert.match(libRs, /cleanup_before_exit/, 'desktop teardown is no longer requested');
+  });
+
+  await test('the process plugin is wired up', () => {
+    assert.match(cargo, /tauri-plugin-process/, 'the process plugin dependency is gone');
+    assert.match(libRs, /tauri_plugin_process::init\(\)/, 'the process plugin is not initialised');
+    const caps = fsx.readJson(path.join(P.ROOT, 'src-tauri', 'capabilities', 'default.json'));
+    assert.ok(caps.permissions.includes('process:default'), 'process:default permission missing');
+  });
+
+  await test('the frontend exit and close APIs are permitted', () => {
+    // The client-facing contract is:
+    //   import { exit } from '@tauri-apps/plugin-process'  ->  await exit(0)
+    //   getCurrentWebviewWindow().close()
+    // process:default covers allow-exit, but core:window:default does NOT
+    // include allow-close - verified against gen/schemas/acl-manifests.json.
+    // Without it, close() is denied at runtime with no build-time error.
+    const caps = fsx.readJson(path.join(P.ROOT, 'src-tauri', 'capabilities', 'default.json'));
+    assert.ok(caps.permissions.includes('core:window:allow-close'),
+      'core:window:allow-close missing; getCurrentWebviewWindow().close() will be denied');
+  });
+
+  await test('the capability applies to the window the app actually opens', () => {
+    // Capabilities are scoped by window label. Tauri defaults an unlabelled
+    // window to "main", and build.js's --name overlay replaces app.windows
+    // wholesale - if that overlay ever sets a different label, every
+    // permission above silently stops applying.
+    const caps = fsx.readJson(path.join(P.ROOT, 'src-tauri', 'capabilities', 'default.json'));
+    assert.ok(caps.windows.includes('main'), 'the capability no longer covers the "main" window');
+    const overlayLabel = /window.labels*=s*'([^']+)'/.exec(source);
+    if (overlayLabel) {
+      assert.ok(caps.windows.includes(overlayLabel[1]),
+        `build.js labels the window "${overlayLabel[1]}" but the capability does not cover it`);
+    }
+  });
+
+  await test('Android immersive fullscreen is patched in, and on by default', () => {
+    assert.match(source, /function patchAndroidFullscreen/, 'the fullscreen patch is gone');
+    assert.match(source, /BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE/, 'sticky immersive behaviour is gone');
+    assert.match(source, /LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES/, 'notch handling is gone');
+    assert.match(source, /windowLayoutInDisplayCutoutMode/, 'the theme cutout patch is gone');
+    // Default must stay "on unless explicitly disabled".
+    assert.match(source, /opts\.fullscreen !== false/, 'Android immersive is no longer the default');
+  });
+
+  await test('the fullscreen patch runs after every android init', () => {
+    // gen/android is regenerated by `android init`, so patching once is not enough.
+    const calls = (source.match(/patchAndroidFullscreen\(\)/g) || []).length;
+    assert.ok(calls >= 2, `expected the patch on both init paths, found ${calls}`);
+    assert.ok(
+      source.indexOf('patchAndroidFullscreen()') < source.indexOf("'android', 'build'"),
+      'the patch must run before the Android build is invoked'
     );
   });
 }
@@ -855,6 +940,7 @@ async function testHttpApi() {
     await testDocumentation();
     await testBuildSpeedConfig();
     await testSlots();
+    await testAppRuntime();
     await testEstimates();
     await testBuildModes();
     await testHttpApi();

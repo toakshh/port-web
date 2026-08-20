@@ -3,7 +3,8 @@
 Everything you can run, what each flag does, and what has to be installed first.
 
 Quick links: [Setup](#setup) · [Requirements](#requirements) · [Commands](#commands) ·
-[Build flags](#build-flags) · [Server](#server) · [Concurrency](#concurrency) ·
+[Build flags](#build-flags) · [Exit from the app](#closing-the-app-from-the-web-layer) ·
+[Server](#server) · [Concurrency](#concurrency) ·
 [Managing builds](#managing-builds) · [HTTP API](#http-api) ·
 [Environment variables](#environment-variables) · [Troubleshooting](#troubleshooting)
 
@@ -200,6 +201,23 @@ Valid ABIs: `aarch64`, `armv7`, `i686`, `x86_64`, or `all`.
 Windows bundle formats are `nsis` (the installer this pipeline publishes) and `msi`. Only `nsis` is
 built by default — the MSI added about 12s per build and was never downloaded.
 
+### Display
+
+| Flag | Meaning |
+| ---- | ------- |
+| `--fullscreen` | Fullscreen on every target — Android immersive **and** borderless desktop |
+| `--no-fullscreen` | Keep system bars and window decorations |
+
+**Default: Android is immersive, desktop is windowed.** Android hides the navigation and status
+bars and draws into the display cutout (notch), because system bars over a full-screen 3D experience
+are almost never wanted. Pass `--no-fullscreen` to opt out.
+
+The bars stay hidden but remain swipe-accessible (`BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`, the
+Android-recommended "sticky immersive" behaviour) and are re-hidden when the app regains focus.
+
+Tauri exposes no setting for this, so `build.js` patches the generated `MainActivity.kt` and
+`themes.xml` after `android init` — the same approach already used for `BuildTask.kt`.
+
 ### Other
 
 | Flag | Meaning |
@@ -261,6 +279,95 @@ ETA while the build runs.
 
 Builds run in a background queue. Up to `BUILD_CONCURRENCY` of them run at once (default 2), each in
 its own isolated slot — see [Concurrency](#concurrency).
+
+---
+
+## Closing the app from the web layer
+
+The generated apps ship a native exit bridge, so your web build can shut itself down — an in-app
+**Exit** button, a kiosk timeout, or an "end session" flow. Three routes work; all were verified by
+running a real Windows build and reading its process exit code.
+
+### 1. `@tauri-apps/plugin-process` — the standard API
+
+```js
+import { exit, relaunch } from '@tauri-apps/plugin-process';
+
+async function closeApp() {
+  await exit(0);
+}
+```
+
+This is enabled: the Rust plugin is registered and `process:default` grants **`process:allow-exit`**
+and `process:allow-restart`.
+
+If your web build cannot add an npm dependency — the usual case here, since it is uploaded as a
+pre-compiled bundle — call the identical function through the global instead. The plugin injects it
+automatically because `withGlobalTauri` is on, so **nothing needs to be installed or bundled**:
+
+```js
+await window.__TAURI__.process.exit(0);       // same command as the import above
+await window.__TAURI__.process.relaunch();
+```
+
+> **Caveat — `exit(code)` ignores a non-zero code.** The plugin routes through `AppHandle::exit`,
+> which does not carry the status through. Measured: `exit(27)` closed the app but the process
+> returned **0**. `exit(0)` behaves exactly as written. If the exit code matters, use route 3.
+
+### 2. Closing the window
+
+```js
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+await getCurrentWebviewWindow().close();
+// or, with no bundled dependency:
+await window.__TAURI__.webviewWindow.getCurrentWebviewWindow().close();
+```
+
+This needs **`core:window:allow-close`**, which is *not* part of `core:default` — that default grants
+only read-only window queries. It is granted explicitly in
+`src-tauri/capabilities/default.json`; `core:window:allow-destroy` is granted too, for `destroy()`
+(force-close that skips the `close-requested` event). Without these the call is rejected at runtime
+with **no build-time error**, which is the usual reason an exit button silently does nothing.
+
+Closing the last window ends the process with exit code 0.
+
+### 3. `exit_app` — when the exit code matters
+
+A custom command that is the only route which reliably propagates a status code:
+
+```js
+await window.__TAURI__.core.invoke('exit_app');            // exit code 0
+await window.__TAURI__.core.invoke('exit_app', { code: 7 });
+```
+
+Desktop runs Tauri's `cleanup_before_exit()` first, so teardown events still fire, then ends the
+process with the requested code. Android ends the process directly, because `AppHandle::exit` can
+leave the activity alive there.
+
+### Detecting the native shell
+
+`window.__TAURI__` exists **only inside the packaged app**, never in a browser, so it doubles as a
+reliable "am I running natively?" check:
+
+```js
+const isNativeApp = typeof window.__TAURI__ !== 'undefined';
+if (isNativeApp) showExitButton();
+```
+
+### Verified results
+
+Measured on a real Windows build by reading the process exit code:
+
+| Call | App closed | Exit code |
+| --- | --- | --- |
+| `__TAURI__.process.exit(27)` | yes | `0` — code dropped by the plugin |
+| `getCurrentWebviewWindow().close()` | yes | `0` |
+| `invoke('exit_app', { code: 27 })` | yes | `27` |
+
+All three APIs were also confirmed present at runtime inside the packaged app.
+
+Android was **not** verified on a physical device; the same permissions and code paths apply, and
+the APK builds and installs, but the behaviour there is unconfirmed.
 
 ---
 

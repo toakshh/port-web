@@ -99,6 +99,35 @@ rustc, the linker, Gradle and makensis. POSIX uses `detached: true` plus a negat
 Windows uses `taskkill /T /F`. Killing only the direct child leaves orphans holding the slot's files.
 Cancelled jobs get status `cancelled`, deliberately distinct from `failed`.
 
+## App runtime (fullscreen and exit)
+
+- **`withGlobalTauri: true` is load-bearing.** The wrapped web build is pre-compiled and cannot
+  import the Tauri JS packages, so `window.__TAURI__` is its only route to a command. Turning it off
+  silently breaks `exit_app` with no build error.
+- **Three exit routes exist, and they are not equivalent** — measured by reading the process exit
+  code from a real Windows build:
+  `__TAURI__.process.exit(27)` closes the app but exits **0** (the plugin goes through
+  `AppHandle::exit`, which drops the code); `getCurrentWebviewWindow().close()` exits 0;
+  `invoke('exit_app', { code: 27 })` exits **27**. `exit_app` (`src-tauri/src/lib.rs`) is the only
+  route that propagates a status code — it calls `cleanup_before_exit()` then
+  `std::process::exit(code)`, and on Android ends the process directly because `AppHandle::exit`
+  can leave the activity alive. Do not "simplify" it back to `AppHandle::exit`.
+- **`core:window:allow-close` is not in `core:default`.** That default grants only read-only window
+  queries (verified in `src-tauri/gen/schemas/acl-manifests.json`), so `close()`/`destroy()` must be
+  listed explicitly in `capabilities/default.json`. A missing window/process permission fails at
+  **runtime with no build error** — the button just does nothing. `process:default` does cover
+  `allow-exit` and `allow-restart`.
+- **Capabilities are scoped by window label.** The capability lists `"main"`; Tauri defaults an
+  unlabelled window to `main`, and `buildConfigOverride()` replaces `app.windows` wholesale when
+  `--name` is passed. If that overlay ever sets a label, every permission silently stops applying.
+- **Android immersive fullscreen** is patched into the generated `MainActivity.kt` and both
+  `themes.xml` files by `patchAndroidFullscreen()`, because Tauri exposes no setting for it. Like
+  `patchBuildTaskKt()`, it must run after *every* `android init` — the generator overwrites both.
+  Bars use `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE` and are re-hidden in `onWindowFocusChanged`,
+  or they stay visible after the user swipes them in.
+- Default is **Android immersive on, desktop windowed**; `--fullscreen` forces both, `--no-fullscreen`
+  disables.
+
 ## Sharp edges
 - `src-tauri/gen/android` is tracked and bakes in the bundle identifier. `build.js` re-runs
   `tauri android init` only when the requested identifier differs from the generated one, which does
