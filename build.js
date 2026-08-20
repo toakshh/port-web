@@ -719,7 +719,10 @@ function ensureDebugKeystore() {
 
 if (opts.mode === 'clean') {
   log('Clean mode: purging the Rust build cache...');
-  fsx.rmrf(ctx.targetDir);
+  // Clear the contents rather than the directory: in Docker this path is the
+  // `rust-target` volume mount point, and removing a mount point fails with
+  // EBUSY. Emptying it has the same effect for Cargo.
+  fsx.clearDir(ctx.targetDir);
 } else if (!fsx.isDir(ctx.targetDir)) {
   log('No compilation cache yet - this first build will take as long as a clean one.');
 }

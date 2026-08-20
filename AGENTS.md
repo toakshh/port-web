@@ -129,6 +129,13 @@ Cancelled jobs get status `cancelled`, deliberately distinct from `failed`.
   disables.
 
 ## Sharp edges
+- **Never `rmrf` a directory that is a Docker volume mount point** — `src-tauri/target`, `dist`,
+  `jobs`, `src-tauri/gen/android` and `.build-workspace` all are, per `docker-compose.yml`.
+  Removing a mount point fails with `EBUSY: resource busy or locked, rmdir` regardless of
+  permissions, and it only reproduces in a container — on Windows and bare Linux those are
+  ordinary directories, so the bug is invisible locally. Use `fsx.clearDir()`, which empties a
+  directory in place; `fsx.emptyDir()` now delegates to it. This is what broke every clean build
+  in Docker.
 - `src-tauri/gen/android` is tracked and bakes in the bundle identifier. `build.js` re-runs
   `tauri android init` only when the requested identifier differs from the generated one, which does
   dirty those tracked files — expected, they are generated code.

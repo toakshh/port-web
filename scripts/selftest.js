@@ -142,6 +142,41 @@ async function testPaths() {
 async function testFsx() {
   console.log('\nfsx');
 
+  await test('clearDir empties a directory without removing it', () => {
+    // In Docker, src-tauri/target, dist and jobs are volume mount points. A
+    // mount point cannot be rmdir'd - the kernel returns EBUSY - so the clean
+    // build purge must clear the contents and leave the directory in place.
+    const dir = tmp('clear-me');
+    writeFile(path.join(dir, 'debug', 'deps', 'a.rlib'), 'x');
+    writeFile(path.join(dir, '.rustc_info.json'), '{}');
+
+    const inode = fs.statSync(dir).ino;
+    fsx.clearDir(dir);
+
+    assert.ok(fsx.isDir(dir), 'clearDir must not remove the directory itself');
+    assert.deepStrictEqual(fs.readdirSync(dir), [], 'contents should be gone');
+    if (process.platform !== 'win32') {
+      assert.strictEqual(fs.statSync(dir).ino, inode,
+        'the directory was recreated rather than cleared; that breaks a mount point');
+    }
+  });
+
+  await test('clearDir creates the directory when it does not exist', () => {
+    const dir = path.join(tmp('clear-parent'), 'missing');
+    fsx.clearDir(dir);
+    assert.ok(fsx.isDir(dir));
+  });
+
+  await test('the clean build purge never rmdirs the shared target directory', () => {
+    // Regression: `fsx.rmrf(ctx.targetDir)` failed in Docker with
+    // EBUSY: resource busy or locked, rmdir '/app/src-tauri/target'.
+    const source = fs.readFileSync(path.join(P.ROOT, 'build.js'), 'utf8');
+    assert.match(source, /clearDir\(ctx\.targetDir\)/,
+      'clean mode must clear the target directory, not remove it');
+    assert.ok(!/rmrf\(ctx\.targetDir\)/.test(source),
+      'rmrf on the target directory breaks every Docker deployment');
+  });
+
   await test('syncDir copies, skips unchanged files and removes extras', () => {
     const src = tmp('sync-src');
     const dst = tmp('sync-dst');
