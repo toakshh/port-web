@@ -217,6 +217,7 @@ function appendLog(job, line) {
   job.logBuffer = job.logBuffer || [];
   job.logBuffer.push(text);
   if (job.logBuffer.length > LOG_TAIL_LINES) job.logBuffer.shift();
+  console.log(`[${job.jobId}] ${text}`);
   try {
     fs.appendFileSync(path.join(jobDir(job.jobId), 'build.log'), `${text}\n`);
   } catch (_) {
@@ -410,6 +411,7 @@ async function runJob(job) {
     });
 
     setStage(job, 'done', `produced ${Object.keys(artifacts).join(', ')} in ${est.formatDuration(job.durationSeconds)}`);
+    console.log(`[${job.jobId}] COMPLETED in ${job.durationSeconds}s - artifacts: ${Object.keys(artifacts).join(', ')}`);
   } catch (err) {
     // A cancelled build fails on the way out; report why it really stopped.
     job.status = job.cancelRequested ? 'cancelled' : 'failed';
@@ -417,6 +419,7 @@ async function runJob(job) {
     job.finishedAt = new Date().toISOString();
     job.durationSeconds = Math.round((Date.now() - startedMs) / 1000);
     appendLog(job, `[${job.status}] ${job.error}`);
+    console.log(`[${job.jobId}] ${job.status.toUpperCase()} in ${job.durationSeconds}s: ${job.error}`);
   } finally {
     delete job.pid;
     // The raw upload is large and no longer needed once it has been extracted.
@@ -438,6 +441,14 @@ app.disable('x-powered-by');
 // this the session cookie is never marked Secure and req.secure is always false.
 app.set('trust proxy', 1);
 app.use(cors());
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    console.log(`[http] ${req.method} ${req.originalUrl || req.url} ${res.statusCode} (${ms}ms)`);
+  });
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
