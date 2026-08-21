@@ -14,6 +14,8 @@
 
 const est = require('../lib/estimate');
 
+require('../lib/env').loadEnv();
+
 const DEFAULT_URL = process.env.CONVERTER_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
@@ -76,10 +78,15 @@ const command = positional[0] || 'list';
 const target = positional[1];
 const base = String(opts.url).replace(/\/+$/, '');
 
-async function api(pathname, init) {
+async function api(pathname, init = {}) {
   let res;
   try {
-    res = await fetch(`${base}${pathname}`, init);
+    // This CLI is the operator's tool: it lists and cancels other people's
+    // jobs, which the server only allows with the dashboard key.
+    const headers = { ...(init.headers || {}) };
+    const key = (process.env.DASHBOARD_TOKEN || '').trim();
+    if (key) headers['X-Dashboard-Key'] = key;
+    res = await fetch(`${base}${pathname}`, { ...init, headers });
   } catch (err) {
     console.error(`Cannot reach the converter service at ${base}`);
     console.error('Is it running?  npm start');
@@ -88,6 +95,9 @@ async function api(pathname, init) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     console.error(body.error || `Request failed with status ${res.status}`);
+    if (res.status === 401) {
+      console.error('Set DASHBOARD_TOKEN (or put it in .env) to use this command.');
+    }
     process.exit(1);
   }
   return body;

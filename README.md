@@ -167,7 +167,7 @@ instead of producing a mislabelled binary.
 | `targets` | no | Comma-separated: `android,exe,mac,ios` (default `android,exe`) |
 | `mode` | no | `fast` (default) or `clean` |
 
-Builds run in a background queue. Up to `BUILD_CONCURRENCY` of them run at once (default 2), each in
+Builds run in a background queue. Up to `BUILD_CONCURRENCY` of them run at once (default 10), each in
 its own isolated slot, so simultaneous users can never overwrite each other's files. The upload
 request returns immediately; poll the job for progress.
 
@@ -261,7 +261,7 @@ and any other client all show the same number instead of each animating its own 
 | `HOST` | `0.0.0.0` | Bind address |
 | `MAX_UPLOAD_MB` | `500` | Upload size limit |
 | `JOB_RETENTION` | `20` | Finished jobs kept on disk |
-| `BUILD_CONCURRENCY` | `2` | How many builds run at once, each in its own slot |
+| `BUILD_CONCURRENCY` | `10` | How many builds run at once, each in its own slot |
 | `BASELINE_DIST` | `./dist` | Baseline web build |
 | `BUILD_WORKSPACE` | `./.build-workspace` | Scratch area Tauri compiles from |
 | `DIST_BUILDS`, `JOBS_DIR`, `UPLOADS_DIR` | `./dist-builds`, `./jobs`, `./uploads` | Output/state |

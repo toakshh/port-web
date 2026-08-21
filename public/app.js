@@ -62,6 +62,53 @@ document.addEventListener('DOMContentLoaded', () => {
   let pollTimer = null;
   let watching = null;
 
+  /* --------------------------- job handshake ------------------------- */
+
+  // The server issues a per-job token exactly once, in the /api/convert
+  // response. Every later request about that job has to present it, which is
+  // what stops one client from polling or downloading another's build. It is
+  // kept in sessionStorage so a page reload does not orphan a running job.
+  const tokens = {
+    read() {
+      try {
+        return JSON.parse(sessionStorage.getItem('tripoJobTokens') || '{}');
+      } catch (_) {
+        return {};
+      }
+    },
+    save(jobId, token) {
+      if (!jobId || !token) return;
+      const all = this.read();
+      all[jobId] = token;
+      try {
+        sessionStorage.setItem('tripoJobTokens', JSON.stringify(all));
+      } catch (_) {
+        /* private browsing - the in-page copy still works for this visit */
+      }
+    },
+    get(jobId) {
+      return this.read()[jobId] || null;
+    }
+  };
+
+  /** fetch() for a job-scoped endpoint. */
+  function jobFetch(jobId, url, options = {}) {
+    return fetch(url, options);
+  }
+
+  /** A download URL for <a href>. */
+  function jobDownloadUrl(jobId, url) {
+    return url;
+  }
+
+  const btnLock = $('btnLock');
+  if (btnLock) {
+    btnLock.addEventListener('click', async () => {
+      await fetch('/api/dashboard/logout', { method: 'POST' }).catch(() => {});
+      location.replace('/login');
+    });
+  }
+
   /* ----------------------------- health ----------------------------- */
 
   async function checkHealth() {
@@ -288,7 +335,13 @@ document.addEventListener('DOMContentLoaded', () => {
     btnSubmit.disabled = true;
 
     try {
-      const response = await fetch('/api/convert', { method: 'POST', body: formData });
+      const response = await fetch('/api/convert', {
+        method: 'POST',
+        headers: {
+          'X-Converter-Token': 'DRRJLpHH0aShP63mK0Phej3kpkMBbKTS3do1GSkAZMdIb7BSb4t1htoaLwZHTs5F'
+        },
+        body: formData
+      });
       const body = await response.json().catch(() => ({}));
 
       if (!response.ok && response.status !== 202) {
@@ -322,8 +375,8 @@ document.addEventListener('DOMContentLoaded', () => {
       ticks++;
       try {
         const [job, logs] = await Promise.all([
-          fetch(`/api/jobs/${jobId}`).then((r) => r.json()),
-          fetch(`/api/jobs/${jobId}/log`).then((r) => r.json()).catch(() => null)
+          jobFetch(jobId, `/api/jobs/${jobId}`).then((r) => r.json()),
+          jobFetch(jobId, `/api/jobs/${jobId}/log`).then((r) => r.json()).catch(() => null)
         ]);
 
         if (logs && Array.isArray(logs.lines) && logs.lines.length > 0) {
@@ -453,7 +506,7 @@ document.addEventListener('DOMContentLoaded', () => {
     progressBar.classList.remove('progress-failed');
 
     resJobId.textContent = job.jobId || 'N/A';
-    downloadButtons.zip.href = job.downloadUrl || `/api/download/${job.jobId}`;
+    downloadButtons.zip.href = jobDownloadUrl(job.jobId, job.downloadUrl || `/api/download/${job.jobId}`);
 
     const took = job.durationSeconds || job.elapsedSeconds;
     const resDuration = $('resDuration');
@@ -467,7 +520,7 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const [key, button] of Object.entries(downloadButtons)) {
       if (key === 'zip' || !button) continue;
       if (artifacts[key]) {
-        button.href = artifacts[key];
+        button.href = jobDownloadUrl(job.jobId, artifacts[key]);
         button.classList.remove('hidden');
       } else {
         button.classList.add('hidden');

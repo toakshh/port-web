@@ -14,6 +14,9 @@
  *    read it, clean jobs update it (that is exactly what "clean" means here).
  */
 
+// Secrets in .env must be visible before anything reads process.env below.
+require('./lib/env').loadEnv();
+
 // Install anything missing before the first third-party require, so a fresh
 // clone on any OS boots without a manual `npm install`.
 require('./lib/ensure-deps').ensureDeps(['express', 'cors', 'multer', 'adm-zip']);
@@ -32,6 +35,7 @@ const fsx = require('./lib/fsx');
 const tc = require('./lib/toolchain');
 const est = require('./lib/estimate');
 const slots = require('./lib/slots');
+const auth = require('./lib/auth');
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -39,7 +43,7 @@ const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB) || 500;
 const JOB_RETENTION = Number(process.env.JOB_RETENTION) || 20;
 const LOG_TAIL_LINES = 400;
 // How many builds may run at once. Each gets its own isolated slot.
-const BUILD_CONCURRENCY = Math.max(1, Number(process.env.BUILD_CONCURRENCY) || 2);
+const BUILD_CONCURRENCY = Math.max(1, Number(process.env.BUILD_CONCURRENCY) || 10);
 
 for (const dir of [P.UPLOADS, P.JOBS, P.DIST_BUILDS, P.WORKSPACE]) fsx.ensureDir(dir);
 
@@ -430,9 +434,63 @@ async function runJob(job) {
 
 const app = express();
 app.disable('x-powered-by');
+// Caddy (or any TLS terminator) speaks plain HTTP to this process. Without
+// this the session cookie is never marked Secure and req.secure is always false.
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+/* ---------------------- dashboard access layer --------------------- */
+
+/**
+ * The browser UI is gated; the API is not.
+ *
+ * Anyone who finds the host must not be able to point the dashboard at their
+ * own site and use this deployment as a free app factory. Server-to-server
+ * integrations are a different audience with a different protection (the
+ * per-job handshake token), so `/api/*` is deliberately left alone here.
+ */
+const OPEN_PATHS = new Set(['/login', '/login.html', '/favicon.ico', '/robots.txt']);
+
+app.post('/api/dashboard/login', (req, res) => {
+  const key = String((req.body && req.body.key) || '');
+  if (!auth.safeEqual(key, auth.getDashboardToken())) {
+    // A blanket delay costs an attacker far more than it costs a person who
+    // mistyped their key once.
+    return setTimeout(() => res.status(401).json({ error: 'Invalid key' }), 600);
+  }
+  auth.setSessionCookie(req, res);
+  return res.json({ authenticated: true, expiresInSeconds: auth.SESSION_SECONDS });
+});
+
+app.post('/api/dashboard/logout', (req, res) => {
+  auth.clearSessionCookie(res);
+  res.json({ authenticated: false });
+});
+
+app.get('/api/dashboard/session', (req, res) => {
+  res.json({ authenticated: auth.isDashboardRequest(req) });
+});
+
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) return next();
+  if (OPEN_PATHS.has(req.path)) return next();
+
+  // `?key=` unlocks in one step (handy for a bookmark), but it is exchanged for
+  // a cookie and redirected away so the key stops appearing in the address bar,
+  // browser history and any proxy log.
+  if (req.query && req.query.key && auth.safeEqual(req.query.key, auth.getDashboardToken())) {
+    auth.setSessionCookie(req, res);
+    return res.redirect(302, req.path);
+  }
+
+  if (auth.isDashboardRequest(req)) return next();
+  return res.redirect(302, `/login?next=${encodeURIComponent(req.originalUrl)}`);
+});
+
+app.get('/login', (req, res) => res.sendFile(path.join(P.PUBLIC, 'login.html')));
+
 app.use(express.static(P.PUBLIC));
 
 /**
@@ -474,6 +532,27 @@ function publicJob(job) {
     rest.etaSeconds = Math.max(job.status === 'running' ? 5 : 0, job.estimate.seconds - elapsed);
   }
   return rest;
+}
+
+/**
+ * Resolve the job in the URL, or answer the request and return null.
+ */
+function requireJob(req, res) {
+  const job = loadJob(req.params.jobId);
+  if (!job) {
+    res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+    return null;
+  }
+  return job;
+}
+
+/** Routes that expose every job at once belong to the operator alone. */
+function requireDashboard(req, res) {
+  if (auth.isDashboardRequest(req)) return true;
+  res.status(401).json({
+    error: 'This endpoint requires the dashboard key (X-Dashboard-Key header or ?key=).'
+  });
+  return false;
 }
 
 app.get('/api/health', (req, res) => {
@@ -567,6 +646,14 @@ app.post('/api/convert', (req, res) => {
       });
     }
 
+    if (!auth.verifyConverterToken(req)) {
+      cleanup();
+      return res.status(401).json({
+        status: 'failed',
+        error: 'Unauthorized: missing or invalid x-converter-token header'
+      });
+    }
+
     if (!webBuildFile) {
       cleanup();
       return res.status(400).json({ status: 'failed', error: 'Missing webBuild ZIP file' });
@@ -638,7 +725,9 @@ app.post('/api/convert', (req, res) => {
       while (job.status !== 'completed' && job.status !== 'failed' && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 1000));
       }
-      return res.status(job.status === 'completed' ? 200 : 500).json(publicJob(job));
+      return res
+        .status(job.status === 'completed' ? 200 : 500)
+        .json(publicJob(job));
     }
 
     return res.status(202).json({
@@ -653,6 +742,7 @@ app.post('/api/convert', (req, res) => {
 });
 
 app.get('/api/jobs', (req, res) => {
+  if (!requireDashboard(req, res)) return;
   const list = [...jobs.values()]
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
     .slice(0, 50)
@@ -661,9 +751,8 @@ app.get('/api/jobs', (req, res) => {
 });
 
 app.get('/api/jobs/:jobId', (req, res) => {
-  const job = loadJob(req.params.jobId);
-  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
-  res.json(publicJob(job));
+  const job = requireJob(req, res);
+  if (job) res.json(publicJob(job));
 });
 
 /**
@@ -733,8 +822,8 @@ function cancelJob(job, reason) {
 }
 
 app.post('/api/jobs/:jobId/cancel', (req, res) => {
-  const job = loadJob(req.params.jobId);
-  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+  const job = requireJob(req, res);
+  if (!job) return;
 
   const result = cancelJob(job, (req.body && req.body.reason) || 'Cancelled by request');
   if (!result.ok) return res.status(409).json({ error: result.error, status: job.status });
@@ -743,6 +832,7 @@ app.post('/api/jobs/:jobId/cancel', (req, res) => {
 
 /** Cancel everything: running builds and the whole queue. */
 app.post('/api/jobs/cancel-all', (req, res) => {
+  if (!requireDashboard(req, res)) return;
   const targets = [...jobs.values()].filter(
     (j) => j.status === 'running' || j.status === 'queued'
   );
@@ -754,8 +844,8 @@ app.post('/api/jobs/cancel-all', (req, res) => {
 });
 
 app.get('/api/jobs/:jobId/log', (req, res) => {
-  const job = loadJob(req.params.jobId);
-  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+  const job = requireJob(req, res);
+  if (!job) return;
 
   let lines = job.logBuffer || [];
   if (lines.length === 0) {
@@ -769,16 +859,15 @@ app.get('/api/jobs/:jobId/log', (req, res) => {
 
 /** Keep legacy `/api/status/:jobId` working. */
 app.get('/api/status/:jobId', (req, res) => {
-  const job = loadJob(req.params.jobId);
-  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
-  res.json(publicJob(job));
+  const job = requireJob(req, res);
+  if (job) res.json(publicJob(job));
 });
 
 const DOWNLOAD_KEYS = new Set(['zip', 'apk', 'exe', 'setup', 'dmg', 'ios']);
 
 app.get('/api/download/:jobId', (req, res) => {
-  const job = loadJob(req.params.jobId);
-  if (!job) return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
+  const job = requireJob(req, res);
+  if (!job) return;
   if (job.status !== 'completed') {
     return res.status(409).json({ error: `Job ${job.jobId} is ${job.status}`, status: job.status });
   }
@@ -842,6 +931,12 @@ const server = app.listen({ port: PORT, host: HOST, exclusive: true }, () => {
   console.log(` Listening : http://${shown}:${PORT}/`);
   console.log(` Health    : http://${shown}:${PORT}/api/health`);
   console.log(` Root      : ${P.ROOT}`);
+  if (auth.isDashboardTokenGenerated()) {
+    console.log(' Dashboard : LOCKED with a generated key (set DASHBOARD_TOKEN to choose your own)');
+    console.log(`   key     : ${auth.getDashboardToken()}`);
+  } else {
+    console.log(' Dashboard : LOCKED with the configured DASHBOARD_TOKEN');
+  }
   console.log(` Can build : ${Object.entries(caps)
     .filter(([k, v]) => k !== 'details' && v)
     .map(([k]) => k)

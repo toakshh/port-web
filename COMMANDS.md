@@ -279,7 +279,7 @@ Then open <http://localhost:3000>. Upload a ZIP, pick targets and a mode, and do
 The dashboard shows an estimated time for each mode before you commit, and a live percentage and
 ETA while the build runs.
 
-Builds run in a background queue. Up to `BUILD_CONCURRENCY` of them run at once (default 2), each in
+Builds run in a background queue. Up to `BUILD_CONCURRENCY` of them run at once (default 10), each in
 its own isolated slot — see [Concurrency](#concurrency).
 
 ---
@@ -377,7 +377,7 @@ the APK builds and installs, but the behaviour there is unconfirmed.
 
 Several people can build at once. Each build runs in its own **slot** — a private project directory
 holding that build's staged web assets and its own generated Android project — so two users' files
-can never mix. `BUILD_CONCURRENCY` sets how many run at a time (default `2`); anything beyond that
+can never mix. `BUILD_CONCURRENCY` sets how many run at a time (default `10`); anything beyond that
 queues, and the queue position and wait are reported to the client.
 
 ```bash
@@ -450,6 +450,44 @@ A local `./build` run has no server involved: stop it with Ctrl+C.
 | `POST` | `/api/jobs/cancel-all` | Stop everything running and queued |
 | `GET` | `/api/download/:jobId` | All artifacts as one ZIP |
 | `GET` | `/api/download/:jobId?file=apk\|exe\|setup\|dmg\|ios\|zip` | A single artifact |
+| `POST` | `/api/dashboard/login` | Exchange the dashboard key for a session cookie |
+| `POST` | `/api/dashboard/logout` | End the dashboard session |
+| `GET` | `/api/dashboard/session` | Whether this browser is unlocked |
+
+### Access control
+
+Two independent layers, aimed at two different problems.
+
+**The dashboard key** stops strangers using your deployment as a free app factory. It gates the
+browser UI in `public/` and the two routes that expose *every* job (`GET /api/jobs`,
+`POST /api/jobs/cancel-all`). Set it with `DASHBOARD_TOKEN`; leave it unset and the server generates
+one, persists it under `.build-workspace/dashboard-token` and prints it at boot — the UI is never
+accidentally open. A browser unlocks at `/login`, or in one step with `?key=…`, which is immediately
+exchanged for an `HttpOnly` session cookie so the key stops appearing in the address bar. Scripts
+send it as `X-Dashboard-Key`.
+
+`POST /api/convert`, `/api/health` and `/api/estimate` are **not** gated by it — server-to-server
+integrations keep working untouched.
+
+**The per-job token** makes sure a build reaches only the client that asked for it. `POST
+/api/convert` returns a `jobToken` exactly once; the server keeps only its SHA-256 digest. Status,
+logs, cancellation and downloads for that job then require it, sent as `X-Job-Token`,
+`Authorization: Bearer …`, or `?token=…` (which is what a plain download link needs). A missing or
+wrong token answers `404`, not `403`: confirming a job id exists is already a leak. Send an optional
+`clientNonce` field with the upload and it is mixed into the token, so both sides contribute
+entropy rather than the server dictating the secret.
+
+```bash
+# 1. Queue the job; keep the token it hands back.
+curl -F webBuild=@build.zip -F targets=exe -F clientNonce=$(openssl rand -hex 16)   http://localhost:3000/api/convert
+
+# 2. Poll and download with it.
+curl -H "X-Job-Token: $TOKEN" http://localhost:3000/api/jobs/$JOB
+curl -O -J "http://localhost:3000/api/download/$JOB?file=setup&token=$TOKEN"
+```
+
+Jobs created before this layer existed have no stored digest and stay reachable, so a redeploy
+never orphans work that is still running.
 
 `POST /api/convert` fields (multipart form):
 
@@ -461,6 +499,7 @@ A local `./build` run has no server involved: stop it with Ctrl+C.
 | `appIdentifier` | no | Must look like `com.example.app` |
 | `targets` | no | `android,exe,mac,ios` — default `android,exe` |
 | `mode` | no | `fast` (default) or `clean` |
+| `clientNonce` | no | Mixed into the per-job token so the client contributes entropy too |
 
 Queue a job and poll it:
 
@@ -484,13 +523,18 @@ curl -O -J "http://localhost:3000/api/download/job_1234567890_abcde?file=apk"
 
 ## Environment variables
 
+A `.env` file next to `package.json` is read by both `npm start` and Docker Compose. It is
+gitignored; copy `.env.example` to start. A real environment variable always wins over the file.
+
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
 | `PORT` | `3000` | Listen port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `MAX_UPLOAD_MB` | `500` | Upload size limit |
 | `JOB_RETENTION` | `20` | Finished jobs kept on disk |
-| `BUILD_CONCURRENCY` | `2` | How many builds run at once, each in its own slot |
+| `BUILD_CONCURRENCY` | `10` | How many builds run at once, each in its own slot |
+| `DASHBOARD_TOKEN` | generated | Access key for the browser dashboard (see Access control) |
+| `DASHBOARD_SESSION_SECONDS` | `43200` | How long a browser stays unlocked |
 | `CONVERTER_URL` | `http://127.0.0.1:$PORT` | Service address used by the `jobs` CLI |
 | `BASELINE_DIST` | `./dist` | The shared baseline web build |
 | `BUILD_WORKSPACE` | `./.build-workspace` | Scratch area Tauri compiles from |

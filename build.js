@@ -392,7 +392,21 @@ function buildConfigOverride(iconPaths) {
   // NSIS defaults to LZMA. On this payload - already-compressed .glb/.jpg
   // assets - LZMA costs ~14s more and saves ~0.1% of installer size, so the
   // trade is not worth making on any build.
-  bundle.windows = { nsis: { compression: 'zlib' } };
+  const nsis = { compression: 'zlib' };
+
+  // The setup executable's own icon is a separate resource from the app
+  // binary's. The NSIS template guards it with `!if "${INSTALLERICON}" != ""`
+  // and Tauri fills that in only from `bundle.windows.nsis.installerIcon` -
+  // there is no fallback to `bundle.icon`. Without this the app installed
+  // perfectly branded while the downloaded setup.exe showed the stock NSIS
+  // icon, which is the only Windows file most users ever see.
+  const ico = (iconPaths || []).find((p) => p.endsWith('.ico'));
+  if (ico) {
+    nsis.installerIcon = ico;
+    nsis.uninstallerIcon = ico;
+  }
+
+  bundle.windows = { nsis };
 
   if (Object.keys(bundle).length > 0) override.bundle = bundle;
   return override;
@@ -469,6 +483,53 @@ function generatedAndroidIdentifier() {
   if (!fsx.isFile(gradle)) return null;
   const match = fs.readFileSync(gradle, 'utf8').match(/namespace\s*=\s*"([^"]+)"/);
   return match ? match[1] : null;
+}
+
+/** Check if the Android project structure and package directory exist and are valid. */
+function isAndroidInitialized() {
+  if (!fsx.isDir(ctx.genAndroid)) return false;
+  const id = generatedAndroidIdentifier();
+  if (!id) return false;
+  const packagePath = id.split('.').join('/');
+  const packageDir = path.join(ctx.genAndroid, 'app', 'src', 'main', 'java', packagePath);
+  return fsx.isDir(packageDir);
+}
+
+/** Ensure WRY / Tauri Android environment variables are populated for Cargo and Gradle. */
+function setAndroidEnv() {
+  const id = generatedAndroidIdentifier() || opts.identifier || 'com.tripo.app';
+  const packagePath = id.split('.');
+  const generatedDir = fsx.ensureDir(
+    path.join(ctx.genAndroid, 'app', 'src', 'main', 'java', ...packagePath, 'generated')
+  );
+
+  process.env.WRY_ANDROID_KOTLIN_FILES_OUT_DIR = generatedDir;
+  process.env.WRY_ANDROID_PACKAGE = id;
+  process.env.WRY_ANDROID_PACKAGE_UNESCAPED = id;
+  process.env.WRY_ANDROID_LIBRARY = 'app_lib';
+  process.env.TAURI_ANDROID_PROJECT_PATH = ctx.genAndroid;
+}
+
+/** Sync generated Kotlin bindings (TauriActivity, WryActivity, etc.) to the active slot. */
+function syncAndroidGeneratedKotlin() {
+  const id = generatedAndroidIdentifier() || opts.identifier || 'com.tripo.app';
+  const packagePath = id.split('.');
+  const targetGeneratedDir = fsx.ensureDir(
+    path.join(ctx.genAndroid, 'app', 'src', 'main', 'java', ...packagePath, 'generated')
+  );
+
+  const baseGeneratedDir = path.join(
+    P.GEN_ANDROID,
+    'app',
+    'src',
+    'main',
+    'java',
+    ...packagePath,
+    'generated'
+  );
+  if (fsx.isDir(baseGeneratedDir) && ctx.genAndroid !== P.GEN_ANDROID) {
+    fsx.syncDir(baseGeneratedDir, targetGeneratedDir);
+  }
 }
 
 /**
@@ -741,6 +802,37 @@ function pruneAndroidJniLibs(abis) {
   }
 }
 
+/**
+ * Invalidate cached Rust library binaries for the given ABIs.
+ *
+ * When `tauri android init` runs, it wipes `gen/android`. If Cargo's compiled
+ * `libapp_lib.so` is already cached in `src-tauri/target/<abi-target>/release/`,
+ * Cargo will skip running Tauri's `build.rs`, leaving `TauriActivity` missing
+ * in `gen/android` and causing Kotlin compilation errors. Unlinking the cached
+ * `.so` files forces Cargo to re-run `build.rs` and re-generate `TauriActivity`.
+ */
+function invalidateAndroidTargetLibs(abis) {
+  for (const abi of abis) {
+    const targetTriple = ANDROID_ABI_TARGETS[abi];
+    if (!targetTriple) continue;
+    const targetDir = path.join(P.TAURI_TARGET, targetTriple);
+    if (!fsx.isDir(targetDir)) continue;
+
+    const profiles = ['release', 'debug'];
+    for (const profile of profiles) {
+      const libFile = path.join(targetDir, profile, 'libapp_lib.so');
+      if (fs.existsSync(libFile)) {
+        try {
+          fs.unlinkSync(libFile);
+          log(`Invalidated cached ${path.relative(P.ROOT, libFile)}`);
+        } catch (err) {
+          logWarn(`Could not remove ${libFile}: ${err.message}`);
+        }
+      }
+    }
+  }
+}
+
 function ensureAndroidTargets(abis) {
   for (const abi of abis) {
     const target = ANDROID_ABI_TARGETS[abi];
@@ -876,17 +968,24 @@ if (opts.android) {
 
     const wantedId = opts.identifier || null;
     const currentId = generatedAndroidIdentifier();
-    const needsInit =
-      !fsx.isDir(ctx.genAndroid) || (wantedId && currentId && wantedId !== currentId);
+    const initialized = isAndroidInitialized();
+    const identifierChanged = Boolean(wantedId && currentId && wantedId !== currentId);
+    const needsInit = opts.mode === 'clean' || !initialized || identifierChanged;
 
     if (needsInit) {
-      if (currentId && wantedId && currentId !== wantedId) {
+      if (identifierChanged) {
         log(`Android project identifier changes ${currentId} -> ${wantedId}; regenerating project.`);
       } else {
         log('Initializing the Android project...');
       }
+      fsx.rmrf(ctx.genAndroid);
       runTauri('android', 'init', '--ci', ...cfg);
+    } else if (opts.mode === 'fast') {
+      log('Skipping tauri android init (fast mode: project already initialized)');
     }
+    setAndroidEnv();
+    syncAndroidGeneratedKotlin();
+    invalidateAndroidTargetLibs(abis);
     patchBuildTaskKt();
     if (androidImmersive()) patchAndroidFullscreen();
     applyAndroidIcons();
@@ -897,7 +996,11 @@ if (opts.android) {
     );
     if (!ok) {
       logWarn('Android build failed - re-running the project generator and retrying once...');
+      fsx.rmrf(ctx.genAndroid);
       runTauri('android', 'init', '--ci', ...cfg);
+      setAndroidEnv();
+      syncAndroidGeneratedKotlin();
+      invalidateAndroidTargetLibs(abis);
       patchBuildTaskKt();
       if (androidImmersive()) patchAndroidFullscreen();
       applyAndroidIcons();

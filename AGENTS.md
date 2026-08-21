@@ -78,7 +78,7 @@ returned on every job — clients render, they do not invent. Do not reintroduce
 
 ## Concurrency (build slots)
 
-`BUILD_CONCURRENCY` (default 2) builds run at once, each in its own slot under
+`BUILD_CONCURRENCY` (default 10) builds run at once, each in its own slot under
 `.build-workspace/slots/<n>/` — a private project copy with its own staged `dist/` and its own
 `src-tauri/gen/android`. `build.js --slot <id>` selects one; without it the build runs from the repo.
 
@@ -128,6 +128,23 @@ Cancelled jobs get status `cancelled`, deliberately distinct from `failed`.
 - Default is **Android immersive on, desktop windowed**; `--fullscreen` forces both, `--no-fullscreen`
   disables.
 
+## Access control
+
+Two layers, deliberately separate — see `lib/auth.js` and the Access control section of
+`COMMANDS.md`.
+
+- **Dashboard key** gates `public/` and the two all-jobs routes. It does **not** gate
+  `POST /api/convert`: server-to-server integrations are protected by the job token instead, and
+  gating convert would break every existing caller. Unset `DASHBOARD_TOKEN` generates and persists
+  one rather than leaving the UI open.
+- **Per-job token** is returned once by `/api/convert`; only its SHA-256 digest is persisted, so a
+  leaked `jobs/` directory does not hand over anyone's builds. Job routes answer **404** on a bad
+  token, never 403 — a 403 confirms the id exists.
+- Both secrets live in `.build-workspace/` (`session-secret`, `dashboard-token`). That is a Docker
+  volume, so sessions survive a redeploy. Nothing may empty the workspace root.
+- Compare secrets with `auth.safeEqual`, never `===`: it hashes both sides first, so an unequal
+  length costs the same as unequal contents and `timingSafeEqual` cannot throw.
+
 ## Sharp edges
 - **Never `rmrf` a directory that is a Docker volume mount point** — `src-tauri/target`, `dist`,
   `jobs`, `src-tauri/gen/android` and `.build-workspace` all are, per `docker-compose.yml`.
@@ -136,6 +153,12 @@ Cancelled jobs get status `cancelled`, deliberately distinct from `failed`.
   ordinary directories, so the bug is invisible locally. Use `fsx.clearDir()`, which empties a
   directory in place; `fsx.emptyDir()` now delegates to it. This is what broke every clean build
   in Docker.
+- **The NSIS setup `.exe` has its own icon resource.** Tauri fills it only from
+  `bundle.windows.nsis.installerIcon`, and its template guards it with
+  `!if "${INSTALLERICON}" != ""` — there is no fallback to `bundle.icon`. Because the pipeline
+  ships the installer and not `app.exe`, forgetting it means every download carries the stock icon
+  while the *installed* app looks right. Measured with a cyan logo: without the override the
+  installer icon read R=167 G=217 B=209 (Tauri's default), with it R=0 G=255 B=255.
 - `src-tauri/gen/android` is tracked and bakes in the bundle identifier. `build.js` re-runs
   `tauri android init` only when the requested identifier differs from the generated one, which does
   dirty those tracked files — expected, they are generated code.

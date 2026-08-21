@@ -9,8 +9,13 @@ services:
       HOST: 0.0.0.0
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-500}
       # Builds that run at once, each in its own isolated slot.
-      BUILD_CONCURRENCY: ${BUILD_CONCURRENCY:-2}
+      BUILD_CONCURRENCY: ${BUILD_CONCURRENCY:-10}
       JOB_RETENTION: ${JOB_RETENTION:-20}
+      # Access key for the browser dashboard. Set it in a `.env` file next to
+      # this one; Compose substitutes it here and never bakes it into the image.
+      # Unset means the server generates and prints one at boot.
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
+      DASHBOARD_SESSION_SECONDS: ${DASHBOARD_SESSION_SECONDS:-43200}
     volumes:
       # The Rust compilation cache - this is what keeps Fast mode fast between
       # container restarts. Without it every job behaves like a clean rebuild.

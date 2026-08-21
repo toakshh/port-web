@@ -24,6 +24,9 @@ const AdmZip = require('adm-zip');
 
 let passed = 0;
 let failed = 0;
+
+/** Dashboard key handed to the server under test. */
+const TEST_DASHBOARD_KEY = 'selftest-dashboard-key-do-not-ship';
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'tripo-selftest-'));
 
 async function test(name, fn) {
@@ -412,6 +415,16 @@ async function testBuildSpeedConfig() {
     assert.ok(callsBeforeBuild, 'the prune must run before the Android build is invoked');
   });
 
+  await test('fast Android build skips android init when initialized and invalidates cached libs when init runs', () => {
+    const source = fs.readFileSync(path.join(P.ROOT, 'build.js'), 'utf8');
+    assert.match(source, /Skipping tauri android init \(fast mode: project already initialized\)/,
+      'fast mode skip log message is missing');
+    assert.match(source, /function invalidateAndroidTargetLibs/,
+      'invalidateAndroidTargetLibs helper is missing');
+    assert.match(source, /invalidateAndroidTargetLibs\(abis\)/,
+      'invalidateAndroidTargetLibs call is missing');
+  });
+
   await test('the frontend is compiled from the workspace, never the baseline', () => {
     const conf = fsx.readJson(path.join(P.ROOT, 'src-tauri', 'tauri.conf.json'));
     assert.ok(conf, 'tauri.conf.json is unreadable');
@@ -530,6 +543,18 @@ async function testIcons() {
       'build.rs no longer declares the icon rerun trigger; icons go stale in fast mode');
     assert.match(source, /TRIPO_ICON_HASH/,
       'build.js no longer sets the icon hash, so the trigger value never changes');
+  });
+
+  await test('the uploaded icon reaches the Windows setup installer', () => {
+    // The setup .exe carries its own icon resource. Tauri's NSIS template only
+    // fills it from bundle.windows.nsis.installerIcon and has no fallback to
+    // bundle.icon, so without this the installed app was branded correctly
+    // while the downloaded installer - the only file most users ever see -
+    // still showed the stock icon. Measured: with the line removed a cyan logo
+    // produced an installer whose icon read R=167 G=217 B=209 (Tauri's
+    // default); with it, R=0 G=255 B=255.
+    assert.match(source, /nsis\.installerIcon = ico/, 'the installer icon is no longer set');
+    assert.match(source, /nsis\.uninstallerIcon = ico/, 'the uninstaller icon is no longer set');
   });
 
   await test('--installer-only ships the setup and still counts as a success', () => {
@@ -761,6 +786,7 @@ function startServer(port) {
         JOBS_DIR: tmp('srv-jobs'),
         UPLOADS_DIR: tmp('srv-uploads'),
         DIST_BUILDS: tmp('srv-dist-builds'),
+        DASHBOARD_TOKEN: TEST_DASHBOARD_KEY,
         NO_COLOR: '1'
       },
       windowsHide: true
@@ -785,11 +811,106 @@ function startServer(port) {
   });
 }
 
+/**
+ * The two access layers, unit-tested without a server: the dashboard key that
+ * gates the browser UI, and the per-job handshake token that makes an artifact
+ * reachable only by whoever created the job.
+ */
+async function testAccessControl() {
+  console.log('\naccess control');
+
+  const auth = require('../lib/auth');
+  const serverSource = fs.readFileSync(path.join(P.ROOT, 'server.js'), 'utf8');
+
+  await test('secret comparison is length-independent', () => {
+    assert.ok(auth.safeEqual('abc', 'abc'));
+    assert.ok(!auth.safeEqual('abc', 'abd'));
+    // A length mismatch must compare, not throw - timingSafeEqual would.
+    assert.doesNotThrow(() => auth.safeEqual('a', 'aaaaaaaaaaaaaaaa'));
+    assert.ok(!auth.safeEqual('a', 'aaaaaaaaaaaaaaaa'));
+    assert.ok(!auth.safeEqual('', 'x'));
+    assert.ok(!auth.safeEqual(undefined, 'x'));
+  });
+
+  await test('converter token authenticates generation requests', () => {
+    const validToken = auth.DEFAULT_CONVERTER_TOKEN;
+    const req = (headers) => ({ headers: headers || {}, query: {}, body: {} });
+
+    assert.ok(auth.verifyConverterToken(req({ 'x-converter-token': validToken })));
+    assert.ok(auth.verifyConverterToken({ headers: {}, query: { converterToken: validToken }, body: {} }));
+    assert.ok(auth.verifyConverterToken({ headers: {}, query: {}, body: { converterToken: validToken } }));
+
+    assert.ok(!auth.verifyConverterToken(req()), 'missing converter token must be rejected');
+    assert.ok(!auth.verifyConverterToken(req({ 'x-converter-token': 'wrong-token' })));
+  });
+
+  await test('a forged session cookie is rejected', () => {
+    const future = Date.now() + 60000;
+    const req = (cookie) => ({ headers: { cookie }, query: {}, body: {} });
+    assert.ok(!auth.isDashboardRequest(req(`${auth.COOKIE_NAME}=${future}.deadbeef`)));
+    assert.ok(!auth.isDashboardRequest(req(`${auth.COOKIE_NAME}=garbage`)));
+    assert.ok(!auth.isDashboardRequest(req('')));
+  });
+
+  await test('every job-scoped route loads the requested job', () => {
+    const guarded = [
+      "app.get('/api/jobs/:jobId'",
+      "app.post('/api/jobs/:jobId/cancel'",
+      "app.get('/api/jobs/:jobId/log'",
+      "app.get('/api/status/:jobId'",
+      "app.get('/api/download/:jobId'"
+    ];
+    for (const route of guarded) {
+      const at = serverSource.indexOf(route);
+      assert.ok(at !== -1, `route ${route} disappeared`);
+      const body = serverSource.slice(at, at + 400);
+      assert.match(body, /requireJob\(req, res\)/, `${route} does not use requireJob`);
+    }
+  });
+
+  await test('routes that expose every job require the operator key', () => {
+    for (const route of ["app.get('/api/jobs'", "app.post('/api/jobs/cancel-all'"]) {
+      const at = serverSource.indexOf(route);
+      assert.ok(at !== -1, `route ${route} disappeared`);
+      assert.match(serverSource.slice(at, at + 200), /requireDashboard\(req, res\)/,
+        `${route} is not restricted to the operator`);
+    }
+  });
+
+
+
+  await test('the unlock page is self-contained and not itself gated', () => {
+    const loginPage = path.join(P.PUBLIC, 'login.html');
+    assert.ok(fsx.isFile(loginPage), 'public/login.html is missing');
+    const html = fs.readFileSync(loginPage, 'utf8');
+    // It is served before authentication, so it cannot pull style.css or app.js
+    // out of the gated directory - the page would render unstyled and dead.
+    assert.ok(!/<link[^>]+stylesheet/i.test(html), 'the unlock page must inline its own styles');
+    assert.ok(!/<script[^>]+src=/i.test(html), 'the unlock page must inline its own script');
+    assert.match(serverSource, /OPEN_PATHS/, 'the static gate no longer has an allow-list');
+  });
+}
+
 async function testHttpApi() {
   console.log('\nhttp api');
 
+  const auth = require('../lib/auth');
   const port = 3100 + Math.floor(Math.random() * 400);
   const base = `http://127.0.0.1:${port}`;
+
+  // Every request below acts as the operator. The access layers themselves are
+  // exercised from an unauthenticated client further down, using `anon`.
+  const anon = globalThis.fetch;
+  const fetch = (url, options = {}) =>
+    anon(url, {
+      ...options,
+      headers: {
+        'X-Converter-Token': auth.DEFAULT_CONVERTER_TOKEN,
+        'X-Dashboard-Key': TEST_DASHBOARD_KEY,
+        ...(options.headers || {})
+      }
+    });
+
   let server;
   try {
     server = await startServer(port);
@@ -815,6 +936,55 @@ async function testHttpApi() {
       const res = await fetch(`${base}/`);
       assert.strictEqual(res.status, 200);
       assert.match(await res.text(), /<html/i);
+    });
+
+    await test('an unauthenticated browser is sent to the unlock page', async () => {
+      for (const route of ['/', '/index.html', '/app.js', '/style.css']) {
+        const res = await anon(`${base}${route}`, { redirect: 'manual' });
+        assert.strictEqual(res.status, 302, `${route} was served without the dashboard key`);
+        assert.match(res.headers.get('location') || '', /^\/login/, `${route} redirected somewhere odd`);
+      }
+      const login = await anon(`${base}/login`);
+      assert.strictEqual(login.status, 200, 'the unlock page itself must stay reachable');
+    });
+
+    await test('the API stays open to server-to-server callers', async () => {
+      // Gating /api/convert would break every existing integration; the browser
+      // UI is what needs protecting, not the service.
+      for (const route of ['/api/health', '/api/estimate?targets=exe']) {
+        assert.strictEqual((await anon(`${base}${route}`)).status, 200, `${route} must not require a key`);
+      }
+    });
+
+    await test('the right key exchanges for a session cookie, the wrong one does not', async () => {
+      const bad = await anon(`${base}/api/dashboard/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'not-the-key' })
+      });
+      assert.strictEqual(bad.status, 401);
+
+      const good = await anon(`${base}/api/dashboard/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: TEST_DASHBOARD_KEY })
+      });
+      assert.strictEqual(good.status, 200);
+
+      const cookie = good.headers.get('set-cookie') || '';
+      assert.match(cookie, /HttpOnly/i, 'the session cookie must not be readable from JavaScript');
+      assert.match(cookie, /SameSite/i, 'the session cookie must set SameSite');
+
+      const page = await anon(`${base}/`, {
+        headers: { cookie: cookie.split(';')[0] },
+        redirect: 'manual'
+      });
+      assert.strictEqual(page.status, 200, 'the session cookie did not unlock the dashboard');
+    });
+
+    await test('listing every job requires the operator key', async () => {
+      assert.strictEqual((await anon(`${base}/api/jobs`)).status, 401);
+      assert.strictEqual((await anon(`${base}/api/jobs/cancel-all`, { method: 'POST' })).status, 401);
     });
 
     await test('GET /api/estimate returns a time for both modes', async () => {
@@ -862,7 +1032,19 @@ async function testHttpApi() {
 
     let jobId = null;
 
-    await test('POST /api/convert queues a job and returns 202 immediately', async () => {
+    await test('POST /api/convert rejects requests without a valid converter token', async () => {
+      const zip = new AdmZip();
+      zip.addFile('index.html', Buffer.from('<html>hello</html>'));
+      const form = new FormData();
+      form.append('webBuild', new Blob([zip.toBuffer()]), 'build.zip');
+      form.append('targets', 'exe');
+      form.append('mode', 'fast');
+
+      const res = await anon(`${base}/api/convert`, { method: 'POST', body: form });
+      assert.strictEqual(res.status, 401, `expected 401, got ${res.status}`);
+    });
+
+    await test('POST /api/convert queues a job with x-converter-token and returns 202', async () => {
       const zip = new AdmZip();
       zip.addFile('index.html', Buffer.from('<html>hello</html>'));
       const form = new FormData();
@@ -871,13 +1053,26 @@ async function testHttpApi() {
       form.append('mode', 'fast');
 
       const started = Date.now();
-      const res = await fetch(`${base}/api/convert`, { method: 'POST', body: form });
+      const res = await fetch(`${base}/api/convert`, {
+        method: 'POST',
+        headers: {
+          'X-Converter-Token': auth.DEFAULT_CONVERTER_TOKEN
+        },
+        body: form
+      });
       assert.strictEqual(res.status, 202, `expected 202, got ${res.status}`);
       const body = await res.json();
       assert.match(body.jobId, /^job_/);
       assert.strictEqual(body.mode, 'fast');
       assert.ok(Date.now() - started < 20000, 'the request must not block on the build');
       jobId = body.jobId;
+    });
+
+    await test('job status and logs can be queried directly by jobId', async () => {
+      const res = await anon(`${base}/api/jobs/${jobId}`);
+      assert.strictEqual(res.status, 200);
+      const body = await res.json();
+      assert.strictEqual(body.jobId, jobId);
     });
 
     await test('a fast job without static/files fails with an actionable message', async () => {
@@ -1020,6 +1215,7 @@ async function testHttpApi() {
     await testAppRuntime();
     await testEstimates();
     await testBuildModes();
+    await testAccessControl();
     await testHttpApi();
   } finally {
     fsx.rmrf(sandbox);
