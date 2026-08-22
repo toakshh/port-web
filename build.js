@@ -760,6 +760,17 @@ function applyAndroidIcons() {
     return;
   }
 
+  // Remove stock Android vector icons that override mipmap PNGs on API 24+
+  for (const sub of ['drawable', 'drawable-v24', 'mipmap-anydpi-v26']) {
+    const stockXml = path.join(res, sub, 'ic_launcher_foreground.xml');
+    if (fs.existsSync(stockXml)) {
+      try {
+        fs.unlinkSync(stockXml);
+        log(`Removed stock ${path.relative(P.ROOT, stockXml)} so custom launcher icons take effect`);
+      } catch (_) {}
+    }
+  }
+
   let copied = 0;
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
