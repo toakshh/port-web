@@ -422,8 +422,8 @@ async function runJob(job) {
     console.log(`[${job.jobId}] ${job.status.toUpperCase()} in ${job.durationSeconds}s: ${job.error}`);
   } finally {
     delete job.pid;
-    // The raw upload is large and no longer needed once it has been extracted.
-    for (const temp of [job.upload.zipPath]) {
+    // The raw upload and logo are large and no longer needed once extracted.
+    for (const temp of [job.upload.zipPath, job.upload.logoPath]) {
       if (temp && fs.existsSync(temp)) fs.rmSync(temp, { force: true });
     }
     fsx.rmrf(webDir);

@@ -530,6 +530,8 @@ async function testIcons() {
     assert.match(source, /function applyAndroidIcons/, 'the Android icon copy is gone');
     const calls = (source.match(/applyAndroidIcons\(\)/g) || []).length;
     assert.ok(calls >= 2, `expected the copy on both android init paths, found ${calls}`);
+    assert.match(source, /stockVectorFiles/, 'stock Android vector drawable removal logic is missing');
+    assert.match(source, /findWebBuildLogo/, 'web build logo search helper is missing');
   });
 
   await test('a changed icon forces the Windows icon to be re-embedded', () => {

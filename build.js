@@ -370,7 +370,7 @@ function promoteBaseline() {
  */
 const androidImmersive = () => opts.fullscreen !== false;
 
-function buildConfigOverride(iconPaths) {
+function buildConfigOverride() {
   const override = {};
   const window = {};
 
@@ -387,34 +387,29 @@ function buildConfigOverride(iconPaths) {
   if (opts.identifier) override.identifier = opts.identifier;
 
   const bundle = {};
-  if (iconPaths && iconPaths.length > 0) bundle.icon = iconPaths;
 
   // NSIS defaults to LZMA. On this payload - already-compressed .glb/.jpg
   // assets - LZMA costs ~14s more and saves ~0.1% of installer size, so the
   // trade is not worth making on any build.
-  const nsis = { compression: 'zlib' };
-
-  // The setup executable's own icon is a separate resource from the app
-  // binary's. The NSIS template guards it with `!if "${INSTALLERICON}" != ""`
-  // and Tauri fills that in only from `bundle.windows.nsis.installerIcon` -
-  // there is no fallback to `bundle.icon`. Without this the app installed
-  // perfectly branded while the downloaded setup.exe showed the stock NSIS
-  // icon, which is the only Windows file most users ever see.
-  const ico = (iconPaths || []).find((p) => p.endsWith('.ico'));
-  if (ico) {
-    nsis.installerIcon = ico;
-    nsis.uninstallerIcon = ico;
-  }
-
+  //
+  // The setup .exe carries its own icon resource separate from the app binary.
+  // Tauri's NSIS template only fills it from installerIcon/uninstallerIcon and
+  // has no fallback to bundle.icon, so without this the installer always showed
+  // the stock Tauri icon even when the app was correctly branded.
+  const ico = 'icons/icon.ico';
+  const nsis = {
+    compression: 'zlib',
+  };
+  nsis.installerIcon = ico;
+  nsis.uninstallerIcon = ico;
   bundle.windows = { nsis };
-
   if (Object.keys(bundle).length > 0) override.bundle = bundle;
   return override;
 }
 
 let overrideFile = null;
-function configArgs(iconPaths) {
-  const override = buildConfigOverride(iconPaths);
+function configArgs() {
+  const override = buildConfigOverride();
   if (Object.keys(override).length === 0) return [];
   overrideFile = path.join(P.WORKSPACE, 'tauri.override.json');
   fsx.writeJson(overrideFile, override);
@@ -430,48 +425,6 @@ function configArgs(iconPaths) {
  * one job can never leak into the next one. Returns bundle.icon paths relative
  * to src-tauri (which is how Tauri resolves them), or null to keep defaults.
  */
-function generateIcons() {
-  if (!opts.logo) return null;
-  if (!fsx.isFile(opts.logo)) {
-    logError(`Icon file not found: ${opts.logo}`);
-    process.exit(1);
-  }
-
-  const outDir = fsx.emptyDir(ctx.iconsDir);
-  log(`Generating icon set from ${opts.logo}`);
-  const res = runTauri('icon', opts.logo, '-o', outDir);
-  if (!res.ok) {
-    logWarn('Icon generation failed - continuing with the default icon set.');
-    return null;
-  }
-
-  const wanted = ['32x32.png', '128x128.png', '128x128@2x.png', 'icon.icns', 'icon.ico'];
-  const produced = wanted
-    .filter((name) => fsx.isFile(path.join(outDir, name)))
-    .map((name) => path.relative(ctx.srcTauri, path.join(outDir, name)).split(path.sep).join('/'));
-
-  if (produced.length === 0) {
-    logWarn('Icon generation produced no usable files - keeping the default icon set.');
-    return null;
-  }
-
-  // Force the icon to actually be re-embedded. tauri-build embeds the .ico from
-  // its build script but never declares it as a rerun trigger, and the path is
-  // identical on every build - so with a warm cache Cargo skips the script and
-  // the previous icon survives. src-tauri/build.rs declares this env var as a
-  // trigger; changing its value is what makes a new icon take effect.
-  const ico = path.join(outDir, 'icon.ico');
-  if (fsx.isFile(ico)) {
-    process.env.TRIPO_ICON_HASH = require('crypto')
-      .createHash('sha256')
-      .update(fs.readFileSync(ico))
-      .digest('hex')
-      .slice(0, 16);
-  }
-
-  logSuccess(`Generated ${produced.length} icon variant(s) in ${outDir}`);
-  return produced;
-}
 
 /* ------------------------------------------------------------------ *
  * Android helpers
@@ -749,40 +702,6 @@ const ABI_JNI_DIRS = {
  *
  * Must run after `android init`, which regenerates res/ with the stock icons.
  */
-function applyAndroidIcons() {
-  if (!ctx.iconsDir) return;
-  const src = path.join(ctx.iconsDir, 'android');
-  if (!fsx.isDir(src)) return;
-
-  const res = path.join(ctx.genAndroid, 'app', 'src', 'main', 'res');
-  if (!fsx.isDir(res)) {
-    logWarn('Android res/ directory not found; launcher icons were not replaced.');
-    return;
-  }
-
-  // Remove stock Android vector icons that override mipmap PNGs on API 24+
-  for (const sub of ['drawable', 'drawable-v24', 'mipmap-anydpi-v26']) {
-    const stockXml = path.join(res, sub, 'ic_launcher_foreground.xml');
-    if (fs.existsSync(stockXml)) {
-      try {
-        fs.unlinkSync(stockXml);
-        log(`Removed stock ${path.relative(P.ROOT, stockXml)} so custom launcher icons take effect`);
-      } catch (_) {}
-    }
-  }
-
-  let copied = 0;
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const from = path.join(src, entry.name);
-    const to = fsx.ensureDir(path.join(res, entry.name));
-    for (const file of fs.readdirSync(from)) {
-      fsx.copyPath(path.join(from, file), path.join(to, file));
-      copied++;
-    }
-  }
-  if (copied > 0) logSuccess(`Applied ${copied} Android launcher icon file(s) from the uploaded logo`);
-}
 
 function pruneAndroidJniLibs(abis) {
   const jniRoot = path.join(ctx.genAndroid, 'app', 'src', 'main', 'jniLibs');
@@ -909,8 +828,138 @@ for (const [platform, requested] of Object.entries(requestedPlatforms)) {
   else fsx.ensureDir(dir);
 }
 
-const iconPaths = generateIcons();
-const cfg = configArgs(iconPaths);
+/**
+ * Find a custom logo image inside the staged web build directory.
+ */
+function findWebBuildLogo(distDir) {
+  if (!distDir || !fsx.isDir(distDir)) return null;
+
+  const candidates = [
+    'logo512.png',
+    'logo192.png',
+    'logo.png',
+    'icon.png',
+    'app-icon.png',
+    'favicon.png',
+    'favicon.ico',
+    'logo.jpg',
+    'logo.jpeg',
+    'logo.webp',
+    'assets/logo.png',
+    'assets/icon.png',
+    'static/logo.png',
+    'static/icon.png',
+    'public/logo.png',
+    'img/logo.png',
+    'images/logo.png'
+  ];
+
+  for (const rel of candidates) {
+    const full = path.join(distDir, rel);
+    if (fsx.isFile(full)) return full;
+  }
+  return null;
+}
+
+let globalLogoSource = opts.logo;
+if (!globalLogoSource) {
+  globalLogoSource = findWebBuildLogo(ctx.distDir);
+  if (!globalLogoSource) {
+    globalLogoSource = path.join(P.BASELINE_DIST, 'logo512.png');
+    if (!fsx.isFile(globalLogoSource)) globalLogoSource = null;
+  }
+} else if (!fsx.isFile(globalLogoSource)) {
+  logError(`Icon file not found: ${globalLogoSource}`);
+  process.exit(1);
+}
+
+function injectIconsForTarget() {
+  if (!globalLogoSource || !fsx.isFile(globalLogoSource)) return;
+  log(`Applying icon set for target from ${globalLogoSource}`);
+  const ok = runTauri('icon', globalLogoSource).ok;
+  if (!ok) {
+    logWarn(`tauri icon generation encountered issues for ${globalLogoSource}`);
+  }
+
+  // Windows: Cargo cache busting.
+  // build.rs declares rerun-if-env-changed=TRIPO_ICON_HASH so changing this
+  // value forces the build script (and therefore icon embedding) to re-run.
+  const ico = path.join(ctx.projectDir, 'src-tauri', 'icons', 'icon.ico');
+  if (fsx.isFile(ico)) {
+    process.env.TRIPO_ICON_HASH = require('crypto')
+      .createHash('sha256').update(fs.readFileSync(ico)).digest('hex').slice(0, 16);
+  }
+}
+
+injectIconsForTarget();
+const cfg = configArgs();
+
+/**
+ * Copy the launcher icons generated by `tauri icon` into the Android project.
+ *
+ * `tauri icon` writes Android mipmaps to src-tauri/icons/android/mipmap-{dpi}/,
+ * but Gradle reads them from gen/android/app/src/main/res/mipmap-{dpi}/.
+ * Without this copy every APK ships Tauri's default launcher icon regardless
+ * of what the user uploaded.
+ *
+ * Must be called after `android init`, which regenerates res/ with stock icons.
+ * Also called on the retry path to ensure the icons survive a re-init.
+ */
+function applyAndroidIcons() {
+  const generatedAndroidIcons = path.join(ctx.projectDir, 'src-tauri', 'icons', 'android');
+  const androidRes = path.join(ctx.genAndroid, 'app', 'src', 'main', 'res');
+
+  if (fsx.isDir(generatedAndroidIcons) && fsx.isDir(androidRes)) {
+    fsx.syncDir(generatedAndroidIcons, androidRes);
+    log('Copied custom launcher icons into Android res/mipmap-*/');
+  }
+
+  if (!fsx.isDir(androidRes)) return;
+
+  // Remove stock Android vector drawables created by `android init` which take precedence
+  // over custom PNG mipmaps on Android 7+ (API 24+).
+  const stockVectorFiles = [
+    path.join(androidRes, 'drawable-v24', 'ic_launcher_foreground.xml'),
+    path.join(androidRes, 'drawable', 'ic_launcher_foreground.xml'),
+    path.join(androidRes, 'drawable-v24', 'ic_launcher_round.xml'),
+    path.join(androidRes, 'drawable', 'ic_launcher_round.xml'),
+    path.join(androidRes, 'drawable-v24', 'ic_launcher_background.xml'),
+    path.join(androidRes, 'drawable', 'ic_launcher_background.xml')
+  ];
+
+  for (const file of stockVectorFiles) {
+    if (fs.existsSync(file)) {
+      try {
+        fs.unlinkSync(file);
+        log(`Removed stock Android vector drawable: ${path.relative(P.ROOT, file)}`);
+      } catch (_) {}
+    }
+  }
+
+  // Ensure adaptive icon XMLs in mipmap-anydpi-v26/ exist and point to the custom icons
+  const anydpiDir = fsx.ensureDir(path.join(androidRes, 'mipmap-anydpi-v26'));
+  const launcherXml = path.join(anydpiDir, 'ic_launcher.xml');
+  if (!fs.existsSync(launcherXml)) {
+    const xmlContent = `<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+  <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+  <background android:drawable="@color/ic_launcher_background"/>
+</adaptive-icon>
+`;
+    fs.writeFileSync(launcherXml, xmlContent, 'utf8');
+  }
+
+  const launcherRoundXml = path.join(anydpiDir, 'ic_launcher_round.xml');
+  if (!fs.existsSync(launcherRoundXml)) {
+    const xmlContent = `<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+  <foreground android:drawable="@mipmap/ic_launcher_round"/>
+  <background android:drawable="@color/ic_launcher_background"/>
+</adaptive-icon>
+`;
+    fs.writeFileSync(launcherRoundXml, xmlContent, 'utf8');
+  }
+}
 
 // Anything older than this is a leftover from a previous run, not our output.
 const buildStartTime = Date.now() - 5000;
@@ -996,11 +1045,14 @@ if (opts.android) {
     }
     setAndroidEnv();
     syncAndroidGeneratedKotlin();
+
     invalidateAndroidTargetLibs(abis);
     patchBuildTaskKt();
     if (androidImmersive()) patchAndroidFullscreen();
-    applyAndroidIcons();
     pruneAndroidJniLibs(abis);
+
+    injectIconsForTarget();
+    applyAndroidIcons();
 
     let ok = timed('android compile + package', () =>
       runTauri('android', 'build', '--apk', ...abiArgs, ...cfg).ok
@@ -1011,11 +1063,15 @@ if (opts.android) {
       runTauri('android', 'init', '--ci', ...cfg);
       setAndroidEnv();
       syncAndroidGeneratedKotlin();
+
       invalidateAndroidTargetLibs(abis);
       patchBuildTaskKt();
       if (androidImmersive()) patchAndroidFullscreen();
-      applyAndroidIcons();
       pruneAndroidJniLibs(abis);
+
+      injectIconsForTarget();
+      applyAndroidIcons();
+
       ok = timed('android compile + package (retry)', () =>
         runTauri('android', 'build', '--apk', ...abiArgs, ...cfg).ok
       );
@@ -1096,6 +1152,8 @@ if (opts.exe) {
 
   buildArgs.push(...cfg);
 
+  injectIconsForTarget();
+
   const ok = timed('windows compile + bundle', () => runTauri(...buildArgs).ok);
   if (!ok) {
     failures.push('windows: the Tauri build command failed');
@@ -1152,6 +1210,7 @@ if (opts.exe) {
 
 if (opts.mac) {
   log('=== macOS ===');
+  injectIconsForTarget();
   const ok = runTauri('build', ...cfg).ok;
   const bundleDir = path.join(ctx.targetDir, 'release', 'bundle');
   if (ok && fsx.isDir(bundleDir)) {
@@ -1179,7 +1238,10 @@ if (opts.ios) {
   let ok = runTauri('ios', 'build', ...cfg).ok;
   if (!ok) {
     runTauri('ios', 'init', '--ci', ...cfg);
+    injectIconsForTarget(); // Natively patches iOS target
     ok = runTauri('ios', 'build', ...cfg).ok;
+  } else {
+    injectIconsForTarget(); 
   }
   const iosBuildDir = path.join(P.ROOT, 'src-tauri', 'gen', 'apple', 'build');
   if (ok && fsx.hasFiles(iosBuildDir)) {
