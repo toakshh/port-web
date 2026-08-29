@@ -36,7 +36,9 @@
     "adm-zip": "^0.6.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "multer": "^2.2.0"
+    "jpeg-js": "^0.4.4",
+    "multer": "^2.2.0",
+    "pngjs": "^7.0.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"

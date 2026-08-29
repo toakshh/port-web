@@ -85,6 +85,8 @@ Web assets:
 Customization:
   --name "<name>"        Product name, window title and installer name
   --logo, --icon <path>  PNG/JPG used to generate the whole icon set
+  --splash <path>        PNG/JPG/WEBP image used as custom Android splash screen
+  --splash-color <hex>   Background color for Android splash screen (default: #FFFFFF)
   --identifier <id>      Bundle identifier, e.g. com.example.app
 
 Speed:
@@ -134,6 +136,8 @@ function parseArgs(argv) {
     webSrc: null,
     name: null,
     logo: null,
+    splash: null,
+    splashColor: null,
     identifier: null,
     out: P.DIST_BUILDS,
     allowWsl: true,
@@ -179,6 +183,8 @@ function parseArgs(argv) {
       case '--name': opts.name = needsValue(i, arg); i++; break;
       case '--logo':
       case '--icon': opts.logo = path.resolve(needsValue(i, arg)); i++; break;
+      case '--splash': opts.splash = path.resolve(needsValue(i, arg)); i++; break;
+      case '--splash-color': opts.splashColor = needsValue(i, arg); i++; break;
       case '--identifier': opts.identifier = needsValue(i, arg); i++; break;
       case '--out': opts.out = path.resolve(needsValue(i, arg)); i++; break;
       case '--no-wsl': opts.allowWsl = false; break;
@@ -547,7 +553,12 @@ function androidAbis() {
  */
 function diagnoseAndroidFailure() {
   const distRoot = path.join(os.homedir(), '.gradle', 'wrapper', 'dists');
-  if (!fsx.isDir(distRoot)) return null;
+  if (!fsx.isDir(distRoot)) {
+    return (
+      'Gradle wrapper distribution is not installed. The download from https://services.gradle.org/distributions/ timed out or failed. ' +
+      'Check network connectivity or retry the build.'
+    );
+  }
 
   for (const versionDir of fsx.walkFiles(distRoot).map((f) => path.dirname(f))) {
     const entries = (() => {
@@ -561,12 +572,12 @@ function diagnoseAndroidFailure() {
     const unpacked = entries.some((e) => !e.includes('.') || e.startsWith('gradle-'));
     const zip = entries.find((e) => e.endsWith('.zip'));
 
-    if (partial && !zip && !unpacked) {
-      const version = path.basename(path.dirname(versionDir));
+    if (!unpacked && (!zip || partial || entries.length === 0)) {
+      const version = path.basename(path.dirname(versionDir)) || 'gradle-8.14.3-bin';
       return (
-        `Gradle could not download its distribution (${version}). This is a network problem, ` +
-        `not a build error. Retry, or fetch it manually into ${versionDir} from ` +
-        'https://services.gradle.org/distributions/'
+        `Gradle wrapper could not download its distribution (${version}). ` +
+        `This is a network timeout / connection problem reaching https://services.gradle.org/distributions/, ` +
+        `not a code or build error. Please check internet connection and retry.`
       );
     }
   }
@@ -873,6 +884,113 @@ if (!globalLogoSource) {
   process.exit(1);
 }
 
+/**
+ * Synchronously prepare and convert any custom logo into a perfectly square PNG image
+ * before icon generation and app compilation start.
+ *
+ * This guarantees that `tauri icon` and platform bundlers receive a compliant
+ * square PNG asset regardless of original format or aspect ratio.
+ */
+function prepareSquareLogo(inputPath, targetDir) {
+  if (!inputPath || !fsx.isFile(inputPath)) return inputPath;
+
+  const PNG = require('pngjs').PNG;
+  const jpeg = require('jpeg-js');
+
+  const outPath = path.join(targetDir, 'prepared-square-logo.png');
+
+  try {
+    const buf = fs.readFileSync(inputPath);
+    let img = null;
+    const ext = path.extname(inputPath).toLowerCase();
+
+    if (ext === '.jpg' || ext === '.jpeg') {
+      img = jpeg.decode(buf, { useTuning: true });
+    } else {
+      try {
+        img = PNG.sync.read(buf);
+      } catch (_) {
+        if (ext === '.png') throw _;
+        img = jpeg.decode(buf, { useTuning: true });
+      }
+    }
+
+    if (!img || !img.width || !img.height || !img.data) return inputPath;
+
+    const w = img.width;
+    const h = img.height;
+    const dim = Math.max(w, h, 512);
+
+    const squarePng = new PNG({ width: dim, height: dim });
+    squarePng.data.fill(0);
+
+    const offsetX = Math.floor((dim - w) / 2);
+    const offsetY = Math.floor((dim - h) / 2);
+
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const srcIdx = (y * w + x) * 4;
+        const targetIdx = ((offsetY + y) * dim + (offsetX + x)) * 4;
+
+        squarePng.data[targetIdx] = img.data[srcIdx];         // R
+        squarePng.data[targetIdx + 1] = img.data[srcIdx + 1]; // G
+        squarePng.data[targetIdx + 2] = img.data[srcIdx + 2]; // B
+        squarePng.data[targetIdx + 3] = img.data[srcIdx + 3]; // A
+      }
+    }
+
+    const outBuf = PNG.sync.write(squarePng);
+    fsx.ensureDir(path.dirname(outPath));
+    fs.writeFileSync(outPath, outBuf);
+    log(`Prepared custom logo into square PNG (${dim}x${dim}): ${path.basename(outPath)}`);
+    return outPath;
+  } catch (err) {
+    logWarn(`Could not auto-square logo (${err.message}); using original ${path.basename(inputPath)}`);
+    return inputPath;
+  }
+}
+
+if (globalLogoSource) {
+  globalLogoSource = prepareSquareLogo(globalLogoSource, P.WORKSPACE);
+}
+
+/**
+ * Find a custom splash image inside the staged web build directory.
+ */
+function findWebBuildSplash(distDir) {
+  if (!distDir || !fsx.isDir(distDir)) return null;
+
+  const candidates = [
+    'splash.png',
+    'splash.jpg',
+    'splash.jpeg',
+    'splash.webp',
+    'splash-screen.png',
+    'splashscreen.png',
+    'assets/splash.png',
+    'assets/splash.jpg',
+    'static/splash.png',
+    'static/splash.jpg',
+    'public/splash.png',
+    'img/splash.png',
+    'images/splash.png'
+  ];
+
+  for (const rel of candidates) {
+    const full = path.join(distDir, rel);
+    if (fsx.isFile(full)) return full;
+  }
+  return null;
+}
+
+let globalSplashSource = opts.splash;
+if (!globalSplashSource) {
+  globalSplashSource = findWebBuildSplash(ctx.distDir);
+} else if (!fsx.isFile(globalSplashSource)) {
+  logError(`Splash image file not found: ${globalSplashSource}`);
+  process.exit(1);
+}
+
 function injectIconsForTarget() {
   if (!globalLogoSource || !fsx.isFile(globalLogoSource)) return;
   log(`Applying icon set for target from ${globalLogoSource}`);
@@ -959,6 +1077,93 @@ function applyAndroidIcons() {
 `;
     fs.writeFileSync(launcherRoundXml, xmlContent, 'utf8');
   }
+
+  // Ensure @color/ic_launcher_background exists so AAPT resource linking never fails
+  const valuesDir = fsx.ensureDir(path.join(androidRes, 'values'));
+  const launcherBgXml = path.join(valuesDir, 'ic_launcher_background.xml');
+  if (!fs.existsSync(launcherBgXml)) {
+    const bgContent = `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="ic_launcher_background">#FFFFFF</color>
+</resources>
+`;
+    fs.writeFileSync(launcherBgXml, bgContent, 'utf8');
+  }
+}
+
+/**
+ * Configure Android custom splash screen drawables, colors, and theme attributes.
+ */
+function applyAndroidSplashScreen() {
+  const androidRes = path.join(ctx.genAndroid, 'app', 'src', 'main', 'res');
+  if (!fsx.isDir(androidRes)) return;
+
+  const splashFile = globalSplashSource || globalLogoSource;
+  const splashColor = opts.splashColor || '#FFFFFF';
+
+  if (!splashFile || !fsx.isFile(splashFile)) return;
+
+  const ext = (path.extname(splashFile) || '.png').toLowerCase();
+  const drawableDir = fsx.ensureDir(path.join(androidRes, 'drawable'));
+  const targetSplashImg = path.join(drawableDir, `splash_image${ext}`);
+  fs.copyFileSync(splashFile, targetSplashImg);
+
+  const imgRef = `@drawable/splash_image`;
+
+  // Update or create colors.xml with splash_background
+  const valuesDir = fsx.ensureDir(path.join(androidRes, 'values'));
+  const colorsXmlPath = path.join(valuesDir, 'colors.xml');
+  let colorsContent = fsx.isFile(colorsXmlPath)
+    ? fs.readFileSync(colorsXmlPath, 'utf8')
+    : `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>`;
+
+  if (colorsContent.includes('name="splash_background"')) {
+    colorsContent = colorsContent.replace(/<color name="splash_background">.*?<\/color>/, `<color name="splash_background">${splashColor}</color>`);
+  } else {
+    colorsContent = colorsContent.replace('</resources>', `    <color name="splash_background">${splashColor}</color>\n</resources>`);
+  }
+  fs.writeFileSync(colorsXmlPath, colorsContent, 'utf8');
+
+  // Create layer-list splash_bg.xml
+  const splashBgXml = path.join(drawableDir, 'splash_bg.xml');
+  const layerListContent = `<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splash_background" />
+    <item>
+        <bitmap
+            android:gravity="center"
+            android:src="${imgRef}" />
+    </item>
+</layer-list>
+`;
+  fs.writeFileSync(splashBgXml, layerListContent, 'utf8');
+
+  // Patch splash screen items into themes.xml
+  const themeFiles = fsx
+    .walkFiles(androidRes)
+    .filter((f) => path.basename(f) === 'themes.xml');
+
+  for (const themeFile of themeFiles) {
+    try {
+      let content = fs.readFileSync(themeFile, 'utf8');
+      if (!content.includes('splash_bg')) {
+        const patched = content.replace(
+          /(<style name="Theme\.app"[^>]*>)/,
+          `$1
+        <item name="android:windowBackground">@drawable/splash_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">${imgRef}</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_background</item>`
+        );
+        if (patched !== content) {
+          fs.writeFileSync(themeFile, patched, 'utf8');
+        }
+      }
+    } catch (err) {
+      logWarn(`Could not patch splash theme in ${themeFile}: ${err.message}`);
+    }
+  }
+
+  log(`Configured custom Android splash screen (${path.basename(splashFile)}, color: ${splashColor})`);
 }
 
 // Anything older than this is a leftover from a previous run, not our output.
@@ -1053,6 +1258,7 @@ if (opts.android) {
 
     injectIconsForTarget();
     applyAndroidIcons();
+    applyAndroidSplashScreen();
 
     let ok = timed('android compile + package', () =>
       runTauri('android', 'build', '--apk', ...abiArgs, ...cfg).ok
@@ -1071,6 +1277,7 @@ if (opts.android) {
 
       injectIconsForTarget();
       applyAndroidIcons();
+      applyAndroidSplashScreen();
 
       ok = timed('android compile + package (retry)', () =>
         runTauri('android', 'build', '--apk', ...abiArgs, ...cfg).ok

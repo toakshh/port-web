@@ -570,6 +570,20 @@ async function testIcons() {
     assert.match(source, /installerOnly && !opts\.installer/,
       'the contradictory flag combination is no longer caught');
   });
+
+  await test('the splash screen configuration reaches the Android project', () => {
+    assert.match(source, /function applyAndroidSplashScreen/, 'the Android splash screen function is missing');
+    assert.match(source, /findWebBuildSplash/, 'web build splash search helper is missing');
+    const calls = (source.match(/applyAndroidSplashScreen\(\)/g) || []).length;
+    assert.ok(calls >= 2, `expected splash configuration on both android init paths, found ${calls}`);
+    assert.match(source, /splash_background/, 'splash background color XML property logic is missing');
+    assert.match(source, /splash_bg/, 'splash layer list drawable logic is missing');
+  });
+
+  await test('non-square uploaded logos are pre-processed into square PNGs', () => {
+    assert.match(source, /function prepareSquareLogo/, 'prepareSquareLogo helper is missing');
+    assert.match(source, /globalLogoSource = prepareSquareLogo/, 'logo pre-processing invocation is missing');
+  });
 }
 
 async function testSlots() {

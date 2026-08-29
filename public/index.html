@@ -77,7 +77,7 @@
             <div class="logo-upload-wrapper">
               <label for="appLogo">App Logo / Icon (PNG/JPG)</label>
               <div class="logo-picker-row">
-                <input type="file" id="appLogo" name="appLogo" accept="image/png,image/jpeg" hidden />
+                <input type="file" id="appLogo" name="appLogo" accept="image/png,image/jpeg,image/webp" hidden />
                 <button type="button" class="btn-secondary" id="btnBrowseLogo">
                   🖼️ Select Logo
                 </button>
@@ -86,6 +86,23 @@
                   <span id="logoPlaceholder">No logo chosen</span>
                 </div>
                 <button type="button" class="btn-remove hidden" id="btnRemoveLogo" title="Remove logo">&times;</button>
+              </div>
+            </div>
+
+            <!-- Splash Screen Upload & Preview -->
+            <div class="logo-upload-wrapper" style="margin-top: 15px;">
+              <label for="appSplash">Android Splash Screen Image & Background Color</label>
+              <div class="logo-picker-row">
+                <input type="file" id="appSplash" name="appSplash" accept="image/png,image/jpeg,image/webp" hidden />
+                <button type="button" class="btn-secondary" id="btnBrowseSplash">
+                  🎨 Select Splash Image
+                </button>
+                <div class="logo-preview-box" id="splashPreviewBox">
+                  <img id="splashPreviewImg" class="hidden" alt="Splash preview" />
+                  <span id="splashPlaceholder">Default / Logo</span>
+                </div>
+                <button type="button" class="btn-remove hidden" id="btnRemoveSplash" title="Remove splash">&times;</button>
+                <input type="color" id="splashColor" name="splashColor" value="#ffffff" title="Splash Background Color" style="height: 38px; width: 44px; padding: 2px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer;" />
               </div>
             </div>
           </div>

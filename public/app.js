@@ -22,6 +22,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const logoPlaceholder = $('logoPlaceholder');
   const btnRemoveLogo = $('btnRemoveLogo');
 
+  const appSplashInput = $('appSplash');
+  const splashColorInput = $('splashColor');
+  const btnBrowseSplash = $('btnBrowseSplash');
+  const splashPreviewImg = $('splashPreviewImg');
+  const splashPlaceholder = $('splashPlaceholder');
+  const btnRemoveSplash = $('btnRemoveSplash');
+
   const formSection = $('formSection');
   const statusSection = $('statusSection');
   const resultSection = $('resultSection');
@@ -221,6 +228,31 @@ document.addEventListener('DOMContentLoaded', () => {
     btnRemoveLogo.classList.add('hidden');
   });
 
+  if (btnBrowseSplash && appSplashInput) {
+    btnBrowseSplash.addEventListener('click', () => appSplashInput.click());
+
+    appSplashInput.addEventListener('change', () => {
+      const splashFile = appSplashInput.files && appSplashInput.files[0];
+      if (!splashFile) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        splashPreviewImg.src = e.target.result;
+        splashPreviewImg.classList.remove('hidden');
+        splashPlaceholder.classList.add('hidden');
+        btnRemoveSplash.classList.remove('hidden');
+      };
+      reader.readAsDataURL(splashFile);
+    });
+
+    btnRemoveSplash.addEventListener('click', () => {
+      appSplashInput.value = '';
+      splashPreviewImg.src = '';
+      splashPreviewImg.classList.add('hidden');
+      splashPlaceholder.classList.remove('hidden');
+      btnRemoveSplash.classList.add('hidden');
+    });
+  }
+
   function formatBytes(bytes) {
     if (!bytes) return '0 Bytes';
     const k = 1024;
@@ -330,6 +362,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (appNameInput.value.trim()) formData.append('appName', appNameInput.value.trim());
     if (appIdentifierInput.value.trim()) formData.append('appIdentifier', appIdentifierInput.value.trim());
     if (appLogoInput.files && appLogoInput.files[0]) formData.append('appLogo', appLogoInput.files[0]);
+    if (appSplashInput && appSplashInput.files && appSplashInput.files[0]) formData.append('appSplash', appSplashInput.files[0]);
+    if (splashColorInput && splashColorInput.value) formData.append('splashColor', splashColorInput.value);
 
     showStatus();
     btnSubmit.disabled = true;
@@ -546,6 +580,14 @@ document.addEventListener('DOMContentLoaded', () => {
     logoPreviewImg.classList.add('hidden');
     logoPlaceholder.classList.remove('hidden');
     btnRemoveLogo.classList.add('hidden');
+    if (appSplashInput) {
+      appSplashInput.value = '';
+      splashPreviewImg.src = '';
+      splashPreviewImg.classList.add('hidden');
+      splashPlaceholder.classList.remove('hidden');
+      btnRemoveSplash.classList.add('hidden');
+    }
+    if (splashColorInput) splashColorInput.value = '#ffffff';
     appNameInput.value = '';
     appIdentifierInput.value = '';
     hideEstimates();

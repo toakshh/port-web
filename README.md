@@ -123,6 +123,8 @@ Web assets:
 Customization:
   --name "<name>"        Product name, window title and installer name
   --logo, --icon <path>  PNG/JPG used to generate the whole icon set
+  --splash <path>        PNG/JPG/WEBP image used as custom Android splash screen
+  --splash-color <hex>   Background color for Android splash screen (default: #FFFFFF)
   --identifier <id>      Bundle identifier, e.g. com.example.app
 
 Speed:
@@ -162,6 +164,8 @@ instead of producing a mislabelled binary.
 | ----- | -------- | ----- |
 | `webBuild` | yes | `.zip` containing `index.html` |
 | `appLogo` | no | PNG/JPG/ICO/WEBP |
+| `appSplash` | no | PNG/JPG/ICO/WEBP |
+| `splashColor` | no | Background color hex (e.g. `#FFFFFF`) |
 | `appName` | no | Product name |
 | `appIdentifier` | no | Must look like `com.example.app` |
 | `targets` | no | Comma-separated: `android,exe,mac,ios` (default `android,exe`) |

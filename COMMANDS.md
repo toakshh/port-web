@@ -181,6 +181,8 @@ In **fast** mode only `<dir>/static/files/` is taken; everything else comes from
 | ---- | ------- |
 | `--name "<name>"` | Product name, window title and installer name |
 | `--logo <path>`, `--icon <path>` | PNG/JPG used to generate the entire icon set |
+| `--splash <path>` | PNG/JPG/WEBP image used as custom Android splash screen |
+| `--splash-color <hex>` | Background color for Android splash screen (default `#FFFFFF`) |
 | `--identifier <id>` | Bundle identifier, e.g. `com.example.app` |
 
 These are applied through a Tauri config overlay, so `tauri.conf.json`, `package.json` and
@@ -495,6 +497,8 @@ never orphans work that is still running.
 | ----- | -------- | ----- |
 | `webBuild` | yes | `.zip` containing `index.html` |
 | `appLogo` | no | PNG / JPG / ICO / WEBP |
+| `appSplash` | no | PNG / JPG / ICO / WEBP |
+| `splashColor` | no | Background color hex (e.g. `#FFFFFF`) |
 | `appName` | no | Product name |
 | `appIdentifier` | no | Must look like `com.example.app` |
 | `targets` | no | `android,exe,mac,ios` — default `android,exe` |

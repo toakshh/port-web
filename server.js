@@ -128,10 +128,11 @@ const storage = multer.diskStorage({
 });
 
 const ALLOWED_LOGO_EXT = new Set(['.png', '.jpg', '.jpeg', '.ico', '.webp']);
+const ALLOWED_SPLASH_EXT = new Set(['.png', '.jpg', '.jpeg', '.ico', '.webp']);
 
 const upload = multer({
   storage,
-  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 2 },
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 3 },
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase();
     if (file.fieldname === 'webBuild') {
@@ -140,6 +141,10 @@ const upload = multer({
     }
     if (file.fieldname === 'appLogo') {
       if (!ALLOWED_LOGO_EXT.has(ext)) return cb(new Error('The logo must be a PNG, JPG, ICO or WEBP image'));
+      return cb(null, true);
+    }
+    if (file.fieldname === 'appSplash') {
+      if (!ALLOWED_SPLASH_EXT.has(ext)) return cb(new Error('The splash screen must be a PNG, JPG, ICO or WEBP image'));
       return cb(null, true);
     }
     return cb(new Error(`Unexpected upload field: ${file.fieldname}`));
@@ -325,6 +330,8 @@ async function runJob(job) {
     if (job.appName) args.push('--name', job.appName);
     if (job.appIdentifier) args.push('--identifier', job.appIdentifier);
     if (job.upload.logoPath) args.push('--logo', job.upload.logoPath);
+    if (job.upload.splashPath) args.push('--splash', job.upload.splashPath);
+    if (job.splashColor) args.push('--splash-color', job.splashColor);
 
     setStage(job, 'build', `node build.js ${args.join(' ')}`);
     const result = await runBuildProcess(job, args);
@@ -422,8 +429,8 @@ async function runJob(job) {
     console.log(`[${job.jobId}] ${job.status.toUpperCase()} in ${job.durationSeconds}s: ${job.error}`);
   } finally {
     delete job.pid;
-    // The raw upload and logo are large and no longer needed once extracted.
-    for (const temp of [job.upload.zipPath, job.upload.logoPath]) {
+    // The raw upload, logo and splash are large and no longer needed once extracted.
+    for (const temp of [job.upload.zipPath, job.upload.logoPath, job.upload.splashPath]) {
       if (temp && fs.existsSync(temp)) fs.rmSync(temp, { force: true });
     }
     fsx.rmrf(webDir);
@@ -634,16 +641,18 @@ app.get('/api/estimate', (req, res) => {
 
 const convertFields = upload.fields([
   { name: 'webBuild', maxCount: 1 },
-  { name: 'appLogo', maxCount: 1 }
+  { name: 'appLogo', maxCount: 1 },
+  { name: 'appSplash', maxCount: 1 }
 ]);
 
 app.post('/api/convert', (req, res) => {
   convertFields(req, res, async (uploadErr) => {
     const webBuildFile = req.files && req.files.webBuild ? req.files.webBuild[0] : null;
     const appLogoFile = req.files && req.files.appLogo ? req.files.appLogo[0] : null;
+    const appSplashFile = req.files && req.files.appSplash ? req.files.appSplash[0] : null;
 
     const cleanup = () => {
-      for (const file of [webBuildFile, appLogoFile]) {
+      for (const file of [webBuildFile, appLogoFile, appSplashFile]) {
         if (file && fs.existsSync(file.path)) fs.rmSync(file.path, { force: true });
       }
     };
@@ -707,6 +716,15 @@ app.post('/api/convert', (req, res) => {
       fs.rmSync(appLogoFile.path, { force: true });
     }
 
+    let splashPath = null;
+    if (appSplashFile) {
+      const ext = path.extname(appSplashFile.originalname).toLowerCase() || '.png';
+      splashPath = path.join(dir, `splash${ext}`);
+      fs.copyFileSync(appSplashFile.path, splashPath);
+      fs.rmSync(appSplashFile.path, { force: true });
+    }
+    const splashColor = String(req.body.splashColor || '').trim() || null;
+
     const job = {
       jobId,
       status: 'queued',
@@ -715,12 +733,14 @@ app.post('/api/convert', (req, res) => {
       targets,
       appName: appName || null,
       appIdentifier: appIdentifier || null,
+      splashColor,
       createdAt: new Date().toISOString(),
       upload: {
         zipPath: webBuildFile.path,
         originalName: webBuildFile.originalname,
         sizeBytes: webBuildFile.size,
-        logoPath
+        logoPath,
+        splashPath
       },
       logBuffer: []
     };
