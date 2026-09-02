@@ -174,21 +174,112 @@ document.addEventListener('DOMContentLoaded', () => {
 
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 
-  dropZone.addEventListener('drop', (e) => {
+  let selectedWebBuildFile = null;
+
+  webBuildInput.addEventListener('change', () => {
+    if (webBuildInput.files && webBuildInput.files[0]) {
+      selectedWebBuildFile = webBuildInput.files[0];
+      handleFileSelect(selectedWebBuildFile);
+    }
+  });
+
+  const webBuildFolderInput = $('webBuildFolder');
+  if (webBuildFolderInput) {
+    webBuildFolderInput.addEventListener('change', async () => {
+      const files = webBuildFolderInput.files;
+      if (!files || files.length === 0) return;
+      
+      showStatus();
+      statusTitle.textContent = 'Zipping folder...';
+      progressTiming.textContent = 'Creating zip archive from selected folder...';
+      
+      try {
+        const zip = new JSZip();
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const path = file.webkitRelativePath || file.name;
+          const parts = path.split('/');
+          if (parts.length > 1) parts.shift(); // remove root dir name
+          zip.file(parts.join('/'), file);
+        }
+        const blob = await zip.generateAsync({ type: 'blob' });
+        selectedWebBuildFile = new File([blob], "upload.zip", { type: "application/zip" });
+        handleFileSelect(selectedWebBuildFile);
+      } catch(err) {
+        alert("Failed to compress folder.");
+      } finally {
+        backToForm();
+      }
+    });
+  }
+
+  async function getFilesFromEntry(entry) {
+    if (entry.isFile) {
+      return new Promise((resolve) => entry.file(f => resolve({ path: entry.fullPath.replace(/^\//, ''), file: f })));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let allEntries = [];
+      let readEntries = async () => {
+        return new Promise((resolve) => {
+          reader.readEntries(async (entries) => {
+            if (entries.length === 0) resolve([]);
+            else resolve(entries.concat(await readEntries()));
+          });
+        });
+      };
+      const entries = await readEntries();
+      let files = [];
+      for (const e of entries) {
+        files = files.concat(await getFilesFromEntry(e));
+      }
+      return files;
+    }
+    return [];
+  }
+
+  dropZone.addEventListener('drop', async (e) => {
     e.preventDefault();
     dropZone.classList.remove('dragover');
+    
+    // Check if folder was dropped
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      const item = e.dataTransfer.items[0].webkitGetAsEntry();
+      if (item && item.isDirectory) {
+        showStatus();
+        statusTitle.textContent = 'Zipping folder...';
+        progressTiming.textContent = 'Creating zip archive from dropped folder...';
+        try {
+          const zip = new JSZip();
+          for (let i = 0; i < e.dataTransfer.items.length; i++) {
+            const currentItem = e.dataTransfer.items[i].webkitGetAsEntry();
+            if (!currentItem) continue;
+            const files = await getFilesFromEntry(currentItem);
+            for (const { path, file } of files) {
+              const parts = path.split('/');
+              if (parts.length > 1 && currentItem.isDirectory) parts.shift();
+              zip.file(parts.join('/'), file);
+            }
+          }
+          const blob = await zip.generateAsync({ type: 'blob' });
+          selectedWebBuildFile = new File([blob], "upload.zip", { type: "application/zip" });
+          handleFileSelect(selectedWebBuildFile);
+        } catch(err) {
+          alert("Failed to compress folder.");
+        } finally {
+          backToForm();
+        }
+        return;
+      }
+    }
+
     const file = e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.zip')) {
       alert('Please upload a .zip archive containing your web app build.');
       return;
     }
-    webBuildInput.files = e.dataTransfer.files;
+    selectedWebBuildFile = file;
     handleFileSelect(file);
-  });
-
-  webBuildInput.addEventListener('change', () => {
-    if (webBuildInput.files && webBuildInput.files[0]) handleFileSelect(webBuildInput.files[0]);
   });
 
   function handleFileSelect(file) {
@@ -202,6 +293,8 @@ document.addEventListener('DOMContentLoaded', () => {
   btnRemoveFile.addEventListener('click', (e) => {
     e.stopPropagation();
     webBuildInput.value = '';
+    if (webBuildFolderInput) webBuildFolderInput.value = '';
+    selectedWebBuildFile = null;
     dropZoneContent.classList.remove('hidden');
     fileInfo.classList.add('hidden');
     hideEstimates();
@@ -289,7 +382,7 @@ document.addEventListener('DOMContentLoaded', () => {
    * took, so it gets sharper with use rather than being a fixed guess.
    */
   async function refreshEstimates() {
-    const hasFile = webBuildInput.files && webBuildInput.files.length > 0;
+    const hasFile = selectedWebBuildFile != null;
     const targets = selectedTargets();
     if (!hasFile || targets.length === 0) {
       hideEstimates();
@@ -344,8 +437,8 @@ document.addEventListener('DOMContentLoaded', () => {
   convertForm.addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    if (!webBuildInput.files || webBuildInput.files.length === 0) {
-      alert('Please select a Web App Build (.zip) file.');
+    if (!selectedWebBuildFile) {
+      alert('Please select a Web App Build (.zip or folder).');
       return;
     }
 
@@ -358,7 +451,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const mode = (document.querySelector('input[name="buildMode"]:checked') || {}).value || 'fast';
 
     const formData = new FormData();
-    formData.append('webBuild', webBuildInput.files[0]);
+    formData.append('webBuild', selectedWebBuildFile);
     formData.append('targets', Array.from(targetBoxes).map((cb) => cb.value).join(','));
     formData.append('mode', mode);
     if (appNameInput.value.trim()) formData.append('appName', appNameInput.value.trim());
@@ -575,6 +668,8 @@ document.addEventListener('DOMContentLoaded', () => {
   btnConvertAnother.addEventListener('click', () => {
     backToForm();
     webBuildInput.value = '';
+    if (webBuildFolderInput) webBuildFolderInput.value = '';
+    selectedWebBuildFile = null;
     dropZoneContent.classList.remove('hidden');
     fileInfo.classList.add('hidden');
     appLogoInput.value = '';

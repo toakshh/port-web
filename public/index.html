@@ -6,6 +6,7 @@
   <title>Portify - Web to Native App Converter</title>
   
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <link rel="stylesheet" href="style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -52,12 +53,16 @@
             </div>
             <div class="p-6">
               <label id="dropZone" class="group flex flex-col items-center justify-center w-full h-56 border-2 border-dashed border-base-content/20 rounded-xl cursor-pointer hover:bg-base-200/50 hover:border-primary transition-all duration-300 relative">
-                <input type="file" id="webBuild" name="webBuild" accept=".zip" required class="hidden" />
+                <input type="file" id="webBuild" name="webBuild" accept=".zip" class="hidden" />
+                <input type="file" id="webBuildFolder" webkitdirectory directory class="hidden" />
                 <div id="dropZoneContent" class="flex flex-col items-center gap-3 text-center pointer-events-none">
                   <div class="w-16 h-16 rounded-full bg-base-200 flex items-center justify-center text-3xl group-hover:bg-primary/20 group-hover:scale-110 transition-transform">📦</div>
-                  <p class="font-bold text-lg">Click or drag ZIP file here</p>
+                  <p class="font-bold text-lg">Click for ZIP, or drag Folder/ZIP here</p>
                   <p class="text-xs text-base-content/60">Must contain index.html.</p>
-                  <span class="badge badge-primary badge-sm">Required</span>
+                  <div class="flex gap-2 pointer-events-auto mt-1">
+                    <button type="button" class="btn btn-primary btn-xs" onclick="document.getElementById('webBuild').click(); return false;">Select ZIP</button>
+                    <button type="button" class="btn btn-secondary btn-xs" onclick="document.getElementById('webBuildFolder').click(); return false;">Select Folder</button>
+                  </div>
                 </div>
                 <!-- File info (Hidden by default) -->
                 <div id="fileInfo" class="hidden absolute inset-0 bg-base-100/95 backdrop-blur flex flex-col items-center justify-center p-6 gap-2">
