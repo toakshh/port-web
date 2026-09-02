@@ -92,8 +92,14 @@ out
 
 # Nuxt.js build / generate output
 .nuxt
-dist
+dist/
 .output
+
+# Tauri generated artifacts
+src-tauri/gen/
+src-tauri/target/
+dist-builds/
+.build-workspace/
 
 # Gatsby files
 .cache/
