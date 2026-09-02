@@ -1,285 +1,300 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Tripo Cloud - Web to Native App Converter</title>
+  <title>Portify - Web to Native App Converter</title>
+  
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
   <link rel="stylesheet" href="style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 </head>
-<body>
-  <div class="app-container">
-    <!-- Header -->
-    <header class="app-header">
-      <div class="brand">
-        <div class="brand-icon">⚡</div>
+<body class="bg-base-300 text-base-content min-h-screen font-[Inter]">
+  <!-- Header -->
+  <header class="bg-base-100 flex items-center justify-between p-4 px-8 shadow-sm">
+    <div class="flex items-center gap-6">
+      <div class="flex items-center gap-3">
+        <div class="text-2xl"><svg class="w-8 h-8 text-primary" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zm0 7l-10 5 10 5 10-5-10-5z"/></svg></div>
         <div>
-          <h1>Tripo App Converter</h1>
-          <p class="tagline">Turn web application builds into native Android, Windows & macOS apps</p>
+          <h1 class="text-xl font-black tracking-tight">Portify</h1>
+          <p class="text-xs opacity-50 hidden sm:block">Turn web builds into native apps</p>
         </div>
       </div>
-      <div class="header-actions">
-        <div id="healthBadge" class="health-badge status-loading">
-          <span class="dot"></span>
-          <span id="healthStatusText">Checking API...</span>
-        </div>
-        <button type="button" id="btnLock" class="btn-lock" title="End this dashboard session">Lock</button>
+      <nav class="hidden md:flex gap-2">
+        <a href="/" class="btn btn-ghost btn-sm text-base-content/80 hover:text-primary">Dashboard</a>
+        <a href="/login.html" class="btn btn-ghost btn-sm text-base-content/80 hover:text-primary">Login</a>
+      </nav>
+    </div>
+    <div class="flex items-center gap-4">
+      <div id="healthBadge" class="health-badge badge badge-neutral status-loading">
+        <span class="dot"></span>
+        <span id="healthStatusText" class="text-xs uppercase font-bold tracking-wider">Checking API</span>
       </div>
-    </header>
+      <button type="button" id="btnLock" class="btn btn-error btn-outline btn-sm shadow-sm" title="End this dashboard session">
+        <svg class="w-4 h-4 mr-1 inline-block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>Lock
+      </button>
+    </div>
+  </header>
 
-    <!-- Main Content Grid -->
-    <main class="main-content">
-      <!-- Converter Form Card -->
-      <section class="card form-card" id="formSection">
-        <form id="convertForm" enctype="multipart/form-data">
-          <!-- 1. Web App Build Upload -->
-          <div class="form-group">
-            <label class="form-label">
-              <span class="step-num">1</span> Web App Build (.zip)
-              <span class="required-star">*</span>
-            </label>
-            <div class="drop-zone" id="dropZone">
-              <input type="file" id="webBuild" name="webBuild" accept=".zip" required hidden />
-              <div class="drop-zone-content" id="dropZoneContent">
-                <div class="drop-icon">📦</div>
-                <p class="drop-title">Drag & drop your Web App ZIP build here</p>
-                <p class="drop-subtitle">or click to browse from your computer (zip containing index.html)</p>
-                <p class="drop-hint">Fast Hot-Swap also needs a <code>static/files/</code> folder inside the zip</p>
-              </div>
-              <div class="file-info hidden" id="fileInfo">
-                <span class="file-icon">📄</span>
-                <span class="file-name" id="fileName">app-build.zip</span>
-                <span class="file-size" id="fileSize">2.4 MB</span>
-                <button type="button" class="btn-remove" id="btnRemoveFile" title="Remove file">&times;</button>
-              </div>
+  <main class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+    <section id="formSection">
+      <form id="convertForm" enctype="multipart/form-data" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- Left Column: Core Actions (Takes up 2 cols) -->
+        <div class="lg:col-span-2 space-y-6">
+          
+          <!-- 1. Dropzone -->
+          <div class="card bg-base-100 border border-base-300 shadow-sm overflow-hidden">
+            <div class="bg-base-200/50 p-4 border-b border-base-300">
+              <h2 class="font-bold text-sm tracking-widest uppercase text-base-content/70">Step 1: Upload Source</h2>
             </div>
-          </div>
-
-          <!-- 2. Customization Details -->
-          <div class="form-group">
-            <label class="form-label">
-              <span class="step-num">2</span> App Details & Customization (Optional)
-            </label>
-            <div class="grid-2col">
-              <div class="input-field">
-                <label for="appName">App Name</label>
-                <input type="text" id="appName" name="appName" placeholder="e.g. My Cool App" />
-              </div>
-              <div class="input-field">
-                <label for="appIdentifier">App Identifier (Bundle ID)</label>
-                <input type="text" id="appIdentifier" name="appIdentifier" placeholder="e.g. com.example.myapp" />
-              </div>
-            </div>
-
-            <!-- Logo Upload & Preview -->
-            <div class="logo-upload-wrapper">
-              <label for="appLogo">App Logo / Icon (PNG/JPG)</label>
-              <div class="logo-picker-row">
-                <input type="file" id="appLogo" name="appLogo" accept="image/png,image/jpeg,image/webp" hidden />
-                <button type="button" class="btn-secondary" id="btnBrowseLogo">
-                  🖼️ Select Logo
-                </button>
-                <div class="logo-preview-box" id="logoPreviewBox">
-                  <img id="logoPreviewImg" class="hidden" alt="Logo preview" />
-                  <span id="logoPlaceholder">No logo chosen</span>
+            <div class="p-6">
+              <label id="dropZone" class="group flex flex-col items-center justify-center w-full h-56 border-2 border-dashed border-base-content/20 rounded-xl cursor-pointer hover:bg-base-200/50 hover:border-primary transition-all duration-300 relative">
+                <input type="file" id="webBuild" name="webBuild" accept=".zip" required class="hidden" />
+                <div id="dropZoneContent" class="flex flex-col items-center gap-3 text-center pointer-events-none">
+                  <div class="w-16 h-16 rounded-full bg-base-200 flex items-center justify-center text-3xl group-hover:bg-primary/20 group-hover:scale-110 transition-transform">📦</div>
+                  <p class="font-bold text-lg">Click or drag ZIP file here</p>
+                  <p class="text-xs text-base-content/60">Must contain index.html.</p>
+                  <span class="badge badge-primary badge-sm">Required</span>
                 </div>
-                <button type="button" class="btn-remove hidden" id="btnRemoveLogo" title="Remove logo">&times;</button>
-              </div>
-            </div>
-
-            <!-- Splash Screen Upload & Preview -->
-            <div class="logo-upload-wrapper" style="margin-top: 15px;">
-              <label for="appSplash">Android Splash Screen Image & Background Color</label>
-              <div class="logo-picker-row">
-                <input type="file" id="appSplash" name="appSplash" accept="image/png,image/jpeg,image/webp" hidden />
-                <button type="button" class="btn-secondary" id="btnBrowseSplash">
-                  🎨 Select Splash Image
-                </button>
-                <div class="logo-preview-box" id="splashPreviewBox">
-                  <img id="splashPreviewImg" class="hidden" alt="Splash preview" />
-                  <span id="splashPlaceholder">Default / Logo</span>
-                </div>
-                <button type="button" class="btn-remove hidden" id="btnRemoveSplash" title="Remove splash">&times;</button>
-                <input type="color" id="splashColor" name="splashColor" value="#ffffff" title="Splash Background Color" style="height: 38px; width: 44px; padding: 2px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer;" />
-              </div>
-            </div>
-          </div>
-
-          <!-- 3. Target Platforms -->
-          <div class="form-group">
-            <label class="form-label">
-              <span class="step-num">3</span> Target Platforms
-            </label>
-            <div class="targets-grid">
-              <label class="target-card">
-                <input type="checkbox" name="targets" value="android" checked />
-                <div class="target-content">
-                  <span class="target-icon">🤖</span>
-                  <span class="target-name">Android APK</span>
-                  <span class="target-sub">Signed Debug APK</span>
-                </div>
-              </label>
-
-              <label class="target-card">
-                <input type="checkbox" name="targets" value="exe" checked />
-                <div class="target-content">
-                  <span class="target-icon">🪟</span>
-                  <span class="target-name">Windows EXE</span>
-                  <span class="target-sub">Executable & Setup</span>
-                </div>
-              </label>
-
-              <label class="target-card">
-                <input type="checkbox" name="targets" value="mac" />
-                <div class="target-content">
-                  <span class="target-icon">🍎</span>
-                  <span class="target-name">macOS DMG</span>
-                  <span class="target-sub">App Bundle & DMG</span>
+                <!-- File info (Hidden by default) -->
+                <div id="fileInfo" class="hidden absolute inset-0 bg-base-100/95 backdrop-blur flex flex-col items-center justify-center p-6 gap-2">
+                  <div class="text-4xl text-success">✓</div>
+                  <div id="fileName" class="font-bold text-lg truncate w-full text-center">app.zip</div>
+                  <div id="fileSize" class="text-sm opacity-60">2.4 MB</div>
+                  <button type="button" id="btnRemoveFile" class="btn btn-sm btn-error btn-outline mt-2 z-10 relative pointer-events-auto">Remove Selection</button>
                 </div>
               </label>
             </div>
           </div>
 
-          <!-- 4. Build Mode & Optimization -->
-          <div class="form-group">
-            <label class="form-label">
-              <span class="step-num">4</span> Build Mode & Optimization
-            </label>
-            <div class="modes-grid">
-              <label class="mode-card">
-                <input type="radio" name="buildMode" value="fast" checked />
-                <div class="mode-content">
-                  <div class="mode-header">
-                    <span class="mode-icon">⚡</span>
-                    <span class="mode-name">Fast Hot-Swap</span>
-                    <span class="badge badge-recommended">Recommended</span>
-                    <span class="mode-eta" id="fastEta" hidden></span>
-                  </div>
-                  <span class="mode-sub">
-                    Keeps the shared app shell and swaps <strong>only <code>static/files/</code></strong> from your
-                    zip, reusing the existing compile cache. Android is built for arm64 only.
-                    The shared baseline is left untouched.
-                  </span>
-                </div>
+          <!-- Target Platforms -->
+          <div class="card bg-base-100 border border-base-300 shadow-sm">
+            <div class="bg-base-200/50 p-4 border-b border-base-300 flex justify-between items-center">
+              <h2 class="font-bold text-sm tracking-widest uppercase text-base-content/70">Step 2: Choose Targets</h2>
+            </div>
+            <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <label class="target-card cursor-pointer group rounded-xl border border-base-content/10 bg-base-100 flex flex-col p-4 relative overflow-hidden transition-all hover:border-primary/50">
+                <input type="checkbox" name="targets" value="android" class="checkbox checkbox-primary absolute top-4 right-4 opacity-0 scale-50 group-has-checked:opacity-100 group-has-checked:scale-100 transition-all z-10" checked />
+                <div class="text-3xl mb-2">🤖</div>
+                <div class="font-bold">Android</div>
+                <div class="text-xs opacity-60 mt-1">Generates an APK</div>
+                <div class="absolute inset-0 border-2 border-primary rounded-xl opacity-0 scale-95 group-has-checked:opacity-100 group-has-checked:scale-100 transition-all pointer-events-none"></div>
+                <div class="absolute inset-0 bg-primary/5 group-has-checked:opacity-100 opacity-0 pointer-events-none transition-all"></div>
               </label>
 
-              <label class="mode-card">
-                <input type="radio" name="buildMode" value="clean" />
-                <div class="mode-content">
-                  <div class="mode-header">
-                    <span class="mode-icon">🧹</span>
-                    <span class="mode-name">Clean Full Rebuild</span>
-                    <span class="mode-eta" id="cleanEta" hidden></span>
-                  </div>
-                  <span class="mode-sub">
-                    Purges the compile cache and rebuilds from your <strong>entire</strong> zip, producing a
-                    universal Android APK, then <strong>permanently updates the shared baseline</strong> so later
-                    fast builds inherit the new common files.
-                  </span>
-                </div>
+              <label class="target-card cursor-pointer group rounded-xl border border-base-content/10 bg-base-100 flex flex-col p-4 relative overflow-hidden transition-all hover:border-primary/50">
+                <input type="checkbox" name="targets" value="exe" class="checkbox checkbox-primary absolute top-4 right-4 opacity-0 scale-50 group-has-checked:opacity-100 group-has-checked:scale-100 transition-all z-10" checked />
+                <div class="text-3xl mb-2">🪟</div>
+                <div class="font-bold">Windows</div>
+                <div class="text-xs opacity-60 mt-1">Generates EXE Setup</div>
+                <div class="absolute inset-0 border-2 border-primary rounded-xl opacity-0 scale-95 group-has-checked:opacity-100 group-has-checked:scale-100 transition-all pointer-events-none"></div>
+                <div class="absolute inset-0 bg-primary/5 group-has-checked:opacity-100 opacity-0 pointer-events-none transition-all"></div>
+              </label>
+
+              <label class="target-card cursor-pointer group rounded-xl border border-base-content/10 bg-base-100 flex flex-col p-4 relative overflow-hidden transition-all hover:border-primary/50">
+                <input type="checkbox" name="targets" value="mac" class="checkbox checkbox-primary absolute top-4 right-4 opacity-0 scale-50 group-has-checked:opacity-100 group-has-checked:scale-100 transition-all z-10" />
+                <div class="text-3xl mb-2">🍎</div>
+                <div class="font-bold">macOS</div>
+                <div class="text-xs opacity-60 mt-1">Generates DMG</div>
+                <div class="absolute inset-0 border-2 border-primary rounded-xl opacity-0 scale-95 group-has-checked:opacity-100 group-has-checked:scale-100 transition-all pointer-events-none"></div>
+                <div class="absolute inset-0 bg-primary/5 group-has-checked:opacity-100 opacity-0 pointer-events-none transition-all"></div>
               </label>
             </div>
-            <p class="mode-eta-note hidden" id="modeEtaNote"></p>
           </div>
-
-          <!-- Submit Button -->
-          <button type="submit" class="btn-primary" id="btnSubmit">
-            🚀 Convert Web App to Native Apps
-          </button>
-        </form>
-      </section>
-
-      <!-- Status / Progress Card (Hidden by default) -->
-      <section class="card status-card hidden" id="statusSection">
-        <div class="status-content">
-          <div class="spinner"></div>
-          <h2 id="statusTitle">Converting Web App...</h2>
-          <p id="statusSubtitle">Extracting web build, initializing Tauri environment, and generating native binaries.</p>
-          <div class="progress-readout">
-            <span class="progress-percent" id="progressText">0%</span>
-            <span class="progress-timing" id="progressTiming">Estimating build time...</span>
-          </div>
-          <div class="progress-bar-container">
-            <div class="progress-bar-fill" id="progressBar"></div>
-          </div>
-          <div class="status-steps" id="statusSteps">
-            <div class="step-item step-active" id="stepUpload">1. Uploading web build &amp; settings</div>
-            <div class="step-item" id="stepExtract">2. Extracting assets &amp; staging web files</div>
-            <div class="step-item" id="stepCompile">3. Compiling native target packages</div>
-            <div class="step-item" id="stepFinalize">4. Signing &amp; packaging output files</div>
-          </div>
-
-          <div class="log-panel">
-            <div class="log-panel-head">
-              <span>Build log</span>
-              <span class="job-id-chip" id="liveJobId"></span>
-            </div>
-            <pre class="log-output" id="logOutput">Waiting for the build to start...</pre>
-          </div>
-
-          <button type="button" class="btn-secondary btn-reset" id="btnCancelWatch">
-            ← Back to the form (the build keeps running)
-          </button>
+          
         </div>
-      </section>
 
-      <!-- Results & Download Card (Hidden by default) -->
-      <section class="card result-card hidden" id="resultSection">
-        <div class="result-header">
-          <div class="success-icon">🎉</div>
-          <h2>Conversion Complete!</h2>
-          <p>Your native app packages are ready for download.</p>
+        <!-- Right Column: Settings and Submission (Takes up 1 col) -->
+        <div class="space-y-6">
+          
+          <!-- Execution Mode / Submit -->
+          <div class="card bg-base-100 border border-base-300 shadow-sm overflow-hidden flex flex-col h-full">
+            <div class="bg-base-200/50 p-4 border-b border-base-300">
+              <h2 class="font-bold text-sm tracking-widest uppercase text-base-content/70">Optimization</h2>
+            </div>
+            
+            <div class="p-6 flex-1 space-y-6">
+              
+              <div class="space-y-3">
+                <label class="mode-card rounded-xl border border-base-content/10 p-4 cursor-pointer flex gap-3 relative transition-all group hover:border-primary">
+                  <input type="radio" name="buildMode" value="fast" class="radio radio-primary radio-sm mt-1" checked />
+                  <div>
+                    <div class="font-bold flex items-center justify-between">
+                      Fast Hot-Swap
+                      <span class="badge badge-success badge-xs uppercase font-bold">Best</span>
+                    </div>
+                    <div class="text-[10px] opacity-70 mt-1">Reuses existing shell. Changes static/files only.</div>
+                    <div class="text-xs font-mono font-semibold text-primary mt-1" id="fastEta" hidden></div>
+                  </div>
+                  <div class="absolute inset-0 bg-primary/5 group-has-[input:checked]:opacity-100 opacity-0 pointer-events-none rounded-xl"></div>
+                  <div class="absolute inset-0 border border-primary group-has-[input:checked]:opacity-100 opacity-0 pointer-events-none rounded-xl"></div>
+                </label>
 
-          <div class="job-meta">
-            <span>Job ID: <strong id="resJobId">job_12345</strong></span>
-            <span id="resDuration"></span>
+                <label class="mode-card rounded-xl border border-base-content/10 p-4 cursor-pointer flex gap-3 relative transition-all group hover:border-primary">
+                  <input type="radio" name="buildMode" value="clean" class="radio radio-primary radio-sm mt-1" />
+                  <div>
+                    <div class="font-bold">Clean Rebuild</div>
+                    <div class="text-[10px] opacity-70 mt-1">Purges cache, rebuilds everything fully.</div>
+                    <div class="text-xs font-mono font-semibold text-primary mt-1" id="cleanEta" hidden></div>
+                  </div>
+                  <div class="absolute inset-0 bg-primary/5 group-has-[input:checked]:opacity-100 opacity-0 pointer-events-none rounded-xl"></div>
+                  <div class="absolute inset-0 border border-primary group-has-[input:checked]:opacity-100 opacity-0 pointer-events-none rounded-xl"></div>
+                </label>
+                <p class="text-[10px] text-warning hidden" id="modeEtaNote"></p>
+              </div>
+
+              <div class="divider text-xs uppercase opacity-30">Optional Info</div>
+              
+              <div class="space-y-4">
+                <div>
+                  <label for="appName" class="text-xs font-bold uppercase mb-1 block opacity-70">App Name</label>
+                  <input type="text" id="appName" name="appName" class="input input-sm input-bordered w-full bg-base-100" placeholder="My App" />
+                </div>
+                <div>
+                  <label for="appIdentifier" class="text-xs font-bold uppercase mb-1 block opacity-70">App ID</label>
+                  <input type="text" id="appIdentifier" name="appIdentifier" class="input input-sm input-bordered w-full bg-base-100" placeholder="com.example.app" />
+                </div>
+                
+                <div class="grid grid-cols-3 gap-6 pt-2">
+                  <div class="flex flex-col">
+                    <label class="text-xs font-bold uppercase mb-2 block opacity-70 text-center">App Icon</label>
+                    <label class="flex flex-col items-center justify-center p-3 border border-base-300 rounded-xl hover:bg-base-200 hover:border-primary/50 cursor-pointer text-center relative max-h-16 overflow-hidden h-16 transition-all" id="btnBrowseLogoLabel">
+                      <input type="file" id="appLogo" name="appLogo" accept="image/png,image/jpeg,image/webp" class="hidden" />
+                      <span class="text-2xl leading-none">🖼️</span>
+                      <div id="logoPreviewBox" class="absolute inset-0 bg-base-200 items-center justify-center hidden">
+                        <img id="logoPreviewImg" class="h-10 object-contain" />
+                      </div>
+                    </label>
+                    <button type="button" class="text-xs text-error font-medium w-full mt-2 hidden hover:underline" id="btnRemoveLogo">Clear</button>
+                  </div>
+                  <div class="flex flex-col">
+                    <label class="text-xs font-bold uppercase mb-2 block opacity-70 text-center">Splash</label>
+                    <label class="flex flex-col items-center justify-center p-3 border border-base-300 rounded-xl hover:bg-base-200 hover:border-primary/50 cursor-pointer text-center relative max-h-16 overflow-hidden h-16 transition-all" id="btnBrowseSplashLabel">
+                      <input type="file" id="appSplash" name="appSplash" accept="image/png,image/jpeg,image/webp" class="hidden" />
+                      <span class="text-2xl leading-none">🎨</span>
+                      <div id="splashPreviewBox" class="absolute inset-0 bg-base-200 items-center justify-center hidden">
+                        <img id="splashPreviewImg" class="h-10 object-contain" />
+                      </div>
+                    </label>
+                    <button type="button" class="text-xs text-error font-medium w-full mt-2 hidden hover:underline" id="btnRemoveSplash">Clear</button>
+                  </div>
+                  <div class="flex flex-col">
+                    <label class="text-xs font-bold uppercase mb-2 block opacity-70 text-center" title="Color">BG Color</label>
+                    <div class="border border-base-300 rounded-xl overflow-hidden h-16 hover:border-primary/50 transition-all shadow-sm">
+                      <input type="color" id="splashColor" name="splashColor" value="#ffffff" class="w-full h-full p-0 border-0 cursor-pointer scale-150 transform origin-center" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+            
+            <div class="p-4 bg-base-200/50 mt-auto border-t border-base-300">
+              <button type="submit" class="btn btn-primary btn-block h-auto py-4 text-lg font-bold uppercase tracking-widest shadow-lg shadow-primary/20" id="btnSubmit">
+                Build native app &rarr;
+              </button>
+            </div>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <!-- Status / Progress Card (Hidden by default) -->
+    <section class="card bg-base-100 shadow-xl border border-base-300 hidden" id="statusSection">
+      ... (Kept similar minimalized structure to integrate with app.js) ...
+      <div class="card-body p-8 sm:p-12 items-center text-center">
+        <span class="loading loading-ring loading-lg text-primary mb-4 w-16 h-16"></span>
+        <h2 id="statusTitle" class="text-3xl font-bold tracking-tight mb-2">Converting Web App...</h2>
+        <p id="statusSubtitle" class="text-base-content/70 max-w-lg mb-8">Extracting web build, initializing Tauri environment, and generating native binaries.</p>
+        
+        <div class="w-full max-w-2xl bg-base-200/50 p-6 rounded-2xl shadow-inner border border-base-200">
+          <div class="flex justify-between items-end mb-2 font-mono text-sm">
+            <span class="text-primary font-bold text-2xl" id="progressText">0%</span>
+            <span class="text-base-content/60" id="progressTiming">Estimating build time...</span>
+          </div>
+          
+          <div class="w-full bg-base-300 rounded-full h-4 mb-6 overflow-hidden progress-bar-container">
+            <div class="h-full progress-bar-fill rounded-full" id="progressBar" style="width: 0%"></div>
+          </div>
+          
+          <div class="text-left text-sm font-medium space-y-3" id="statusSteps">
+            <div class="step-item flex items-center gap-3" id="stepUpload"><span class="w-6 h-6 rounded-full bg-base-300 flex items-center justify-center text-xs">1</span> Uploading web build &amp; settings</div>
+            <div class="step-item flex items-center gap-3" id="stepExtract"><span class="w-6 h-6 rounded-full bg-base-300 flex items-center justify-center text-xs">2</span> Extracting assets &amp; staging web files</div>
+            <div class="step-item flex items-center gap-3" id="stepCompile"><span class="w-6 h-6 rounded-full bg-base-300 flex items-center justify-center text-xs">3</span> Compiling native target packages</div>
+            <div class="step-item flex items-center gap-3" id="stepFinalize"><span class="w-6 h-6 rounded-full bg-base-300 flex items-center justify-center text-xs">4</span> Signing &amp; packaging output files</div>
           </div>
         </div>
 
-        <div class="download-section">
-          <!-- Primary All-in-One Download -->
-          <a id="dlZipBtn" class="dl-btn dl-zip-btn" href="#" download>
-            <span class="btn-icon">📦</span>
-            <div class="btn-text">
-              <span class="main-text">Download All Packages (ZIP)</span>
-              <span class="sub-text">Includes all compiled platform binaries</span>
-            </div>
+        <div class="w-full max-w-2xl mt-8 mockup-code bg-neutral text-neutral-content text-left text-xs shadow-lg h-48 overflow-auto">
+          <div class="sticky top-0 bg-neutral w-full px-4 py-2 border-b border-neutral-content/10 font-bold flex justify-between z-10 backdrop-blur">
+            <span>Build log</span>
+            <span class="text-primary font-mono" id="liveJobId"></span>
+          </div>
+          <pre class="px-4 py-4 m-0" id="logOutput"><code>Waiting for the build to start...</code></pre>
+        </div>
+
+        <button type="button" class="btn btn-outline btn-sm mt-8 opacity-70" id="btnCancelWatch">
+          ← Back to the form
+        </button>
+      </div>
+    </section>
+
+    <!-- Results & Download Card -->
+    <section class="card bg-gradient-to-b from-base-200/50 to-base-100 border border-success/50 shadow-xl hidden" id="resultSection">
+      ... (Kept identical result markup to mesh perfectly with app.js expectations) ...
+      <div class="card-body p-8 items-center text-center">
+        <div class="text-6xl mb-4 animate-bounce">🎉</div>
+        <h2 class="text-3xl font-bold tracking-tight mb-2 text-success">Conversion Complete!</h2>
+        
+        <div class="flex items-center gap-4 bg-base-200 px-6 py-3 rounded-full font-mono text-sm shadow-inner mb-8 mt-4 border border-base-300">
+          <span>Job ID: <strong class="text-primary" id="resJobId">job_12345</strong></span>
+          <span class="w-px h-4 bg-base-content/20"></span>
+          <span class="opacity-80" id="resDuration"></span>
+        </div>
+
+        <div class="w-full max-w-2xl">
+          <a id="dlZipBtn" class="dl-btn dl-zip-btn flex flex-col items-center bg-primary hover:bg-primary/90 text-primary-content p-6 rounded-xl transition-all" href="#" download>
+            <div class="text-3xl mb-2">📦</div>
+            <div class="font-bold text-lg">Download All Packages (ZIP)</div>
           </a>
 
-          <div class="individual-downloads" id="individualDownloads">
-            <a id="dlApkBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
-              <span class="btn-icon">🤖</span> Download Android APK
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4" id="individualDownloads">
+            <a id="dlApkBtn" class="btn btn-outline flex-col h-auto py-3 hidden" href="#" download>
+              <span class="text-2xl mb-1">🤖</span> APK
             </a>
-            <a id="dlExeBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
-              <span class="btn-icon">🪟</span> Download Windows EXE
+            <a id="dlExeBtn" class="btn btn-outline flex-col h-auto py-3 hidden" href="#" download>
+              <span class="text-2xl mb-1">🪟</span> EXE
             </a>
-            <a id="dlSetupBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
-              <span class="btn-icon">🧩</span> Download Windows Installer
+            <a id="dlSetupBtn" class="btn btn-outline flex-col h-auto py-3 hidden" href="#" download>
+              <span class="text-2xl mb-1">🧩</span> Installer
             </a>
-            <a id="dlDmgBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
-              <span class="btn-icon">🍎</span> Download macOS DMG
+            <a id="dlDmgBtn" class="btn btn-outline flex-col h-auto py-3 hidden" href="#" download>
+              <span class="text-2xl mb-1">🍎</span> DMG
             </a>
-            <a id="dlIosBtn" class="dl-btn dl-platform-btn hidden" href="#" download>
-              <span class="btn-icon">📱</span> Download iOS Package
+            <a id="dlIosBtn" class="btn btn-outline flex-col h-auto py-3 hidden" href="#" download>
+              <span class="text-2xl mb-1">📱</span> iOS
             </a>
           </div>
-
-          <p class="result-note hidden" id="resultNote"></p>
+          <p class="text-warning text-sm mt-4 hidden" id="resultNote"></p>
         </div>
 
-        <button type="button" class="btn-secondary btn-reset" id="btnConvertAnother">
-          🔄 Convert Another App
-        </button>
-      </section>
-    </main>
+        <button type="button" class="btn btn-ghost mt-8" id="btnConvertAnother">🔄 Convert Another App</button>
+      </div>
+    </section>
+  </main>
 
-    <!-- Footer -->
-    <footer class="app-footer">
-      <p>Tripo Cloud Web-to-App Service &bull; Tauri & Express Powered Pipeline</p>
-    </footer>
-  </div>
+  <!-- Footer -->
+  <footer class="text-center p-6 text-base-content/40 text-xs mt-8 pb-10">
+    <p class="flex items-center justify-center gap-2 font-medium tracking-wide">
+      Developed by Akshat &nbsp;| &nbsp;
+      <a href="https://github.com/toakshh" target="_blank" rel="noopener" class="hover:text-primary transition-colors hover:scale-110" title="GitHub Account">
+        <svg class="w-4 h-4 inline-block" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"></path></svg>
+      </a>
+    </p>
+  </footer>
 
   <script src="app.js"></script>
 </body>

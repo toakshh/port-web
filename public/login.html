@@ -1,55 +1,70 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex, nofollow" />
-<title>Locked — Tripo Converter</title>
+<title>Login - Portify Converter</title>
 <!-- Deliberately self-contained: this page is served before authentication,
      so it must not pull anything else out of the gated public/ directory. -->
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; min-height: 100vh; display: grid; place-items: center;
-    background: #0b0f17; color: #e6edf7;
-    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  .card {
-    width: min(380px, calc(100vw - 2rem));
-    padding: 2rem; border-radius: 14px;
-    background: #131a26; border: 1px solid #232d3d;
-    box-shadow: 0 20px 60px rgba(0,0,0,.45);
-  }
-  h1 { margin: 0 0 .35rem; font-size: 1.15rem; }
-  p  { margin: 0 0 1.35rem; color: #93a3b8; font-size: .875rem; }
-  label { display: block; margin-bottom: .4rem; font-size: .8rem; color: #93a3b8; }
-  input {
-    width: 100%; padding: .7rem .85rem; border-radius: 9px;
-    border: 1px solid #2b3648;
-    background: #0d131d; color: #e6edf7; font-size: .95rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  }
-  input:focus { outline: none; border-color: #4c8dff; box-shadow: 0 0 0 3px rgba(76,141,255,.18); }
-  button {
-    width: 100%; margin-top: 1rem; padding: .7rem; border: 0; border-radius: 9px;
-    background: #4c8dff; color: #06101f; font-weight: 600; font-size: .95rem; cursor: pointer;
-  }
-  button:disabled { opacity: .55; cursor: default; }
-  .error { margin-top: .9rem; min-height: 1.2em; font-size: .82rem; color: #ff7b72; }
-</style>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 </head>
-<body>
-  <form class="card" id="form" autocomplete="off">
-    <h1>Tripo Converter</h1>
-    <p>This dashboard is private. Enter the access key to continue.</p>
+<body class="bg-base-300 text-base-content min-h-screen font-[Inter] flex flex-col">
 
-    <label for="key">Access key</label>
-    <input id="key" name="key" type="password" required autofocus spellcheck="false" />
+  <!-- Header -->
+  <header class="bg-base-100 flex items-center justify-between p-4 px-8 shadow-sm">
+    <div class="flex items-center gap-6">
+      <div class="flex items-center gap-3">
+        <div class="text-2xl"><svg class="w-8 h-8 text-primary" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7l10 5 10-5-10-5zm0 7l-10 5 10 5 10-5-10-5z"/></svg></div>
+        <div>
+          <h1 class="text-xl font-black tracking-tight">Portify</h1>
+          <p class="text-xs opacity-50 hidden sm:block">Turn web builds into native apps</p>
+        </div>
+      </div>
+      <nav class="hidden md:flex gap-2">
+        <a href="/" class="btn btn-ghost btn-sm text-base-content/80 hover:text-primary">Dashboard</a>
+        <a href="/login.html" class="btn btn-ghost btn-sm text-base-content/80 hover:text-primary">Login</a>
+      </nav>
+    </div>
+  </header>
 
-    <button id="submit" type="submit">Unlock</button>
-    <div class="error" id="error" role="alert"></div>
-  </form>
+  <!-- Login Area -->
+  <main class="flex-1 flex items-center justify-center p-4">
+    <form class="card bg-base-100 shadow-xl border border-base-300 w-full max-w-sm overflow-hidden" id="form" autocomplete="off">
+      <div class="bg-base-200/50 p-6 border-b border-base-300 flex items-center justify-center relative">
+        <div class="w-16 h-16 rounded-full bg-base-300 flex items-center justify-center">
+            <svg class="w-8 h-8 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+        </div>
+      </div>
+      <div class="card-body p-8 pt-6">
+        <h2 class="text-2xl font-bold tracking-tight text-center mb-1">Restricted Access</h2>
+        <p class="text-sm text-base-content/60 text-center mb-6">Enter the master key to access the Portify dashboard.</p>
+
+        <div class="form-control w-full space-y-2">
+          <label for="key" class="label p-0"><span class="text-xs font-bold uppercase opacity-70">Access key</span></label>
+          <input id="key" name="key" type="password" required autofocus spellcheck="false" class="input input-bordered w-full font-mono tracking-widest bg-base-200 focus:border-primary transition-colors" placeholder="••••••••" />
+        </div>
+
+        <button id="submit" type="submit" class="btn btn-primary w-full mt-6 shadow-lg shadow-primary/20 tracking-widest uppercase font-bold text-sm">Unlock Dashboard &rarr;</button>
+        <div class="text-error text-sm mt-4 text-center font-medium empty:hidden p-2 bg-error/10 rounded-lg" id="error" role="alert"></div>
+      </div>
+    </form>
+  </main>
+
+  <!-- Footer -->
+  <footer class="text-center p-6 text-base-content/40 text-xs mt-auto pb-10 border-t border-base-300/50">
+    <p class="flex items-center justify-center gap-2 font-medium tracking-wide">
+      Developed by Akshat &nbsp;| &nbsp;
+      <a href="https://github.com/toakshh" target="_blank" rel="noopener" class="hover:text-primary transition-colors hover:scale-110" title="GitHub Account">
+        <svg class="w-4 h-4 inline-block" fill="currentColor" viewBox="0 0 24 24"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd"></path></svg>
+      </a>
+    </p>
+  </footer>
 
 <script>
   const form = document.getElementById('form');
@@ -60,8 +75,12 @@
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     error.textContent = '';
+    error.classList.add('hidden');
     submit.disabled = true;
-    submit.textContent = 'Checking…';
+    
+    // Convert button to loading state
+    const originalText = submit.innerHTML;
+    submit.innerHTML = '<span class="loading loading-spinner loading-sm"></span> Checking...';
 
     try {
       const res = await fetch('/api/dashboard/login', {
@@ -70,15 +89,16 @@
         body: JSON.stringify({ key: keyInput.value })
       });
       if (!res.ok) throw new Error('That key was not accepted.');
-      // The session cookie is set; go where the user was actually headed.
+      
       const next = new URLSearchParams(location.search).get('next');
       location.replace(next && next.startsWith('/') && !next.startsWith('//') ? next : '/');
     } catch (err) {
+      error.classList.remove('hidden');
       error.textContent = err.message;
       keyInput.select();
     } finally {
       submit.disabled = false;
-      submit.textContent = 'Unlock';
+      submit.innerHTML = originalText;
     }
   });
 </script>

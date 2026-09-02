@@ -126,7 +126,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const caps = data.capabilities || {};
       const buildable = ['android', 'windows', 'mac', 'ios'].filter((k) => caps[k]);
 
-      healthBadge.className = `health-badge ${buildable.length ? 'status-online' : 'status-degraded'}`;
+      healthBadge.classList.remove('status-loading', 'status-online', 'status-degraded');
+      healthBadge.classList.add(buildable.length ? 'status-online' : 'status-degraded');
       healthStatusText.textContent = buildable.length
         ? `API Online — ${buildable.join(', ')}`
         : 'API Online — no build toolchain';
@@ -153,7 +154,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Target availability may have just changed what is selected.
       refreshEstimates();
     } catch (err) {
-      healthBadge.className = 'health-badge status-loading';
+      healthBadge.classList.remove('status-online', 'status-degraded');
+      healthBadge.classList.add('status-loading');
       healthStatusText.textContent = 'API Offline';
     }
   }
@@ -487,9 +489,9 @@ document.addEventListener('DOMContentLoaded', () => {
     order.forEach((name, i) => {
       const el = steps[name];
       if (!el) return;
-      if (i < index) el.className = 'step-item step-done';
-      else if (i === index) el.className = `step-item step-${state === 'done' ? 'done' : 'active'}`;
-      else el.className = 'step-item';
+      el.classList.remove('step-done', 'step-active');
+      if (i < index) el.classList.add('step-done');
+      else if (i === index) el.classList.add(`step-${state === 'done' ? 'done' : 'active'}`);
     });
   }
 
