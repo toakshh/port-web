@@ -17,16 +17,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const appNameInput = $('appName');
   const appIdentifierInput = $('appIdentifier');
   const appLogoInput = $('appLogo');
-  const btnBrowseLogo = $('btnBrowseLogo');
   const logoPreviewImg = $('logoPreviewImg');
-  const logoPlaceholder = $('logoPlaceholder');
+  const logoPreviewBox = $('logoPreviewBox');
   const btnRemoveLogo = $('btnRemoveLogo');
 
   const appSplashInput = $('appSplash');
   const splashColorInput = $('splashColor');
-  const btnBrowseSplash = $('btnBrowseSplash');
   const splashPreviewImg = $('splashPreviewImg');
-  const splashPlaceholder = $('splashPlaceholder');
+  const splashPreviewBox = $('splashPreviewBox');
   const btnRemoveSplash = $('btnRemoveSplash');
 
   const formSection = $('formSection');
@@ -153,6 +151,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       // Target availability may have just changed what is selected.
       refreshEstimates();
+      syncSplashState();
     } catch (err) {
       healthBadge.classList.remove('status-online', 'status-degraded');
       healthBadge.classList.add('status-loading');
@@ -174,83 +173,258 @@ document.addEventListener('DOMContentLoaded', () => {
 
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 
-  dropZone.addEventListener('drop', (e) => {
+  let selectedWebBuildFile = null;
+
+  webBuildInput.addEventListener('change', () => {
+    if (webBuildInput.files && webBuildInput.files[0]) {
+      handleFileSelect(webBuildInput.files[0]);
+    }
+  });
+
+  const webBuildFolderInput = $('webBuildFolder');
+  if (webBuildFolderInput) {
+    webBuildFolderInput.addEventListener('change', async () => {
+      const files = webBuildFolderInput.files;
+      if (!files || files.length === 0) return;
+      
+      showStatus();
+      statusTitle.textContent = 'Zipping folder...';
+      progressTiming.textContent = 'Creating zip archive from selected folder...';
+      
+      try {
+        const zip = new JSZip();
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const path = file.webkitRelativePath || file.name;
+          zip.file(path, file);
+        }
+        const blob = await zip.generateAsync({ type: 'blob' });
+        const generatedFile = new File([blob], "upload.zip", { type: "application/zip" });
+        await handleFileSelect(generatedFile);
+      } catch(err) {
+        showNotification('error', 'Compression Failed', err.message);
+      } finally {
+        if (!selectedWebBuildFile) backToForm(false);
+      }
+    });
+  }
+
+  async function getFilesFromEntry(entry) {
+    if (entry.isFile) {
+      return new Promise((resolve) => entry.file(f => resolve({ path: entry.fullPath.replace(/^\//, ''), file: f })));
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let allEntries = [];
+      let readEntries = async () => {
+        return new Promise((resolve) => {
+          reader.readEntries(async (entries) => {
+            if (entries.length === 0) resolve([]);
+            else resolve(entries.concat(await readEntries()));
+          });
+        });
+      };
+      const entries = await readEntries();
+      let files = [];
+      for (const e of entries) {
+        files = files.concat(await getFilesFromEntry(e));
+      }
+      return files;
+    }
+    return [];
+  }
+
+  dropZone.addEventListener('drop', async (e) => {
     e.preventDefault();
     dropZone.classList.remove('dragover');
+    
+    // Check if folder was dropped
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      const item = e.dataTransfer.items[0].webkitGetAsEntry();
+      if (item && item.isDirectory) {
+        showStatus();
+        statusTitle.textContent = 'Zipping folder...';
+        progressTiming.textContent = 'Creating zip archive from dropped folder...';
+        try {
+          const zip = new JSZip();
+          for (let i = 0; i < e.dataTransfer.items.length; i++) {
+            const currentItem = e.dataTransfer.items[i].webkitGetAsEntry();
+            if (!currentItem) continue;
+            const files = await getFilesFromEntry(currentItem);
+            for (const { path, file } of files) {
+              zip.file(path, file);
+            }
+          }
+          const blob = await zip.generateAsync({ type: 'blob' });
+          const generatedFile = new File([blob], "upload.zip", { type: "application/zip" });
+          await handleFileSelect(generatedFile);
+        } catch(err) {
+          showNotification('error', 'Compression Failed', err.message);
+        } finally {
+          if (!selectedWebBuildFile) backToForm(false);
+        }
+        return;
+      }
+    }
+
     const file = e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.zip')) {
-      alert('Please upload a .zip archive containing your web app build.');
+      showNotification('error', 'Invalid File', 'Please upload a .zip archive containing your web app build, or drop a folder.');
       return;
     }
-    webBuildInput.files = e.dataTransfer.files;
     handleFileSelect(file);
   });
 
-  webBuildInput.addEventListener('change', () => {
-    if (webBuildInput.files && webBuildInput.files[0]) handleFileSelect(webBuildInput.files[0]);
-  });
+  async function handleFileSelect(file) {
+    showStatus();
+    statusTitle.textContent = 'Validating Structure...';
+    progressTiming.textContent = 'Analyzing zip bundle contents...';
 
-  function handleFileSelect(file) {
-    fileNameDisplay.textContent = file.name;
-    fileSizeDisplay.textContent = formatBytes(file.size);
-    dropZoneContent.classList.add('hidden');
-    fileInfo.classList.remove('hidden');
-    refreshEstimates();
+    try {
+      if (file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip') {
+        const zip = await JSZip.loadAsync(file);
+        const files = Object.keys(zip.files);
+        
+        const rootFolders = files.filter(f => f.endsWith('/') && f.split('/').length === 2);
+        const rootFiles = files.filter(f => !f.includes('/'));
+        
+        let basePrefix = '';
+        if (rootFolders.length === 1 && rootFiles.length === 0) {
+          basePrefix = rootFolders[0];
+        }
+        
+        if (!zip.files[basePrefix + 'index.html']) {
+          throw new Error('No "index.html" found. Please make sure your compiled index.html is at the root level of your bundle.');
+        }
+        
+        if (zip.files[basePrefix + 'package.json'] || files.some(f => f.startsWith(basePrefix + 'node_modules/'))) {
+          throw new Error('Bundle contains raw project source code (found package.json or node_modules). Please upload only the compiled output (e.g. dist/ or build/).');
+        }
+      }
+
+      selectedWebBuildFile = file;
+      fileNameDisplay.textContent = file.name;
+      fileSizeDisplay.textContent = formatBytes(file.size);
+      dropZoneContent.classList.add('hidden');
+      fileInfo.classList.remove('hidden');
+      refreshEstimates();
+      backToForm(false);
+    } catch (err) {
+      selectedWebBuildFile = null;
+      if (webBuildInput) webBuildInput.value = '';
+      if (webBuildFolderInput) webBuildFolderInput.value = '';
+      showNotification('error', 'Invalid Folder Structure', err.message);
+      backToForm(false);
+    }
   }
 
   btnRemoveFile.addEventListener('click', (e) => {
     e.stopPropagation();
     webBuildInput.value = '';
+    if (webBuildFolderInput) webBuildFolderInput.value = '';
+    selectedWebBuildFile = null;
     dropZoneContent.classList.remove('hidden');
     fileInfo.classList.add('hidden');
     hideEstimates();
   });
 
-  btnBrowseLogo.addEventListener('click', () => appLogoInput.click());
+  async function promptCrop(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        Swal.fire({
+          title: 'Crop Image',
+          html: `<div style="max-height: 50vh; overflow: hidden; display: flex; justify-content: center;"><img id="cropImageTarget" src="${e.target.result}" style="max-width: 100%; display: block;"></div>`,
+          background: '#1d232a',
+          color: '#a6adbb',
+          showCancelButton: true,
+          confirmButtonText: 'Apply Crop',
+          customClass: {
+            confirmButton: 'btn btn-primary',
+            cancelButton: 'btn btn-outline ml-4'
+          },
+          buttonsStyling: false,
+          didOpen: () => {
+            const image = Swal.getHtmlContainer().querySelector('#cropImageTarget');
+            Swal._cropper = new Cropper(image, {
+              aspectRatio: 1,
+              viewMode: 1,
+              dragMode: 'move',
+              background: false
+            });
+          },
+          preConfirm: () => {
+            return new Promise((res) => {
+              Swal._cropper.getCroppedCanvas({ width: 512, height: 512 }).toBlob((blob) => {
+                res(new File([blob], file.name, { type: file.type }));
+              }, file.type);
+            });
+          }
+        }).then((result) => {
+          if (Swal._cropper) Swal._cropper.destroy();
+          resolve(result.isConfirmed ? result.value : null);
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+  }
 
-  appLogoInput.addEventListener('change', () => {
-    const logoFile = appLogoInput.files && appLogoInput.files[0];
-    if (!logoFile) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      logoPreviewImg.src = e.target.result;
-      logoPreviewImg.classList.remove('hidden');
-      logoPlaceholder.classList.add('hidden');
-      btnRemoveLogo.classList.remove('hidden');
-    };
-    reader.readAsDataURL(logoFile);
+  appLogoInput.addEventListener('change', async () => {
+    const origFile = appLogoInput.files && appLogoInput.files[0];
+    if (!origFile) return;
+    
+    const croppedFile = await promptCrop(origFile);
+    if (!croppedFile) {
+      appLogoInput.value = '';
+      return;
+    }
+    
+    const dt = new DataTransfer();
+    dt.items.add(croppedFile);
+    appLogoInput.files = dt.files;
+    
+    logoPreviewImg.src = URL.createObjectURL(croppedFile);
+    logoPreviewBox.classList.remove('hidden');
+    logoPreviewBox.classList.add('flex');
+    btnRemoveLogo.classList.remove('hidden');
   });
 
-  btnRemoveLogo.addEventListener('click', () => {
+  btnRemoveLogo.addEventListener('click', (e) => {
+    e.preventDefault();
     appLogoInput.value = '';
     logoPreviewImg.src = '';
-    logoPreviewImg.classList.add('hidden');
-    logoPlaceholder.classList.remove('hidden');
+    logoPreviewBox.classList.remove('flex');
+    logoPreviewBox.classList.add('hidden');
     btnRemoveLogo.classList.add('hidden');
   });
 
-  if (btnBrowseSplash && appSplashInput) {
-    btnBrowseSplash.addEventListener('click', () => appSplashInput.click());
-
-    appSplashInput.addEventListener('change', () => {
-      const splashFile = appSplashInput.files && appSplashInput.files[0];
-      if (!splashFile) return;
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        splashPreviewImg.src = e.target.result;
-        splashPreviewImg.classList.remove('hidden');
-        splashPlaceholder.classList.add('hidden');
-        btnRemoveSplash.classList.remove('hidden');
-      };
-      reader.readAsDataURL(splashFile);
+  if (appSplashInput) {
+    appSplashInput.addEventListener('change', async () => {
+      const origFile = appSplashInput.files && appSplashInput.files[0];
+      if (!origFile) return;
+      
+      const croppedFile = await promptCrop(origFile);
+      if (!croppedFile) {
+        appSplashInput.value = '';
+        return;
+      }
+      
+      const dt = new DataTransfer();
+      dt.items.add(croppedFile);
+      appSplashInput.files = dt.files;
+      
+      splashPreviewImg.src = URL.createObjectURL(croppedFile);
+      splashPreviewBox.classList.remove('hidden');
+      splashPreviewBox.classList.add('flex');
+      btnRemoveSplash.classList.remove('hidden');
     });
 
-    btnRemoveSplash.addEventListener('click', () => {
+    btnRemoveSplash.addEventListener('click', (e) => {
+      e.preventDefault();
       appSplashInput.value = '';
       splashPreviewImg.src = '';
-      splashPreviewImg.classList.add('hidden');
-      splashPlaceholder.classList.remove('hidden');
+      splashPreviewBox.classList.remove('flex');
+      splashPreviewBox.classList.add('hidden');
       btnRemoveSplash.classList.add('hidden');
     });
   }
@@ -274,8 +448,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* ---------------------------- estimates ---------------------------- */
 
-  const selectedTargets = () =>
-    Array.from(document.querySelectorAll('input[name="targets"]:checked')).map((cb) => cb.value);
+  function selectedTargets() {
+    return Array.from(document.querySelectorAll('input[name="targets"]:checked')).map((cb) => cb.value);
+  }
 
   function hideEstimates() {
     fastEta.hidden = true;
@@ -289,7 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
    * took, so it gets sharper with use rather than being a fixed guess.
    */
   async function refreshEstimates() {
-    const hasFile = webBuildInput.files && webBuildInput.files.length > 0;
+    const hasFile = selectedWebBuildFile != null;
     const targets = selectedTargets();
     if (!hasFile || targets.length === 0) {
       hideEstimates();
@@ -335,30 +510,61 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  const splashSettingGroup = $('splashSettingGroup');
+  const splashColorSettingGroup = $('splashColorSettingGroup');
+
+  function syncSplashState() {
+    const androidBox = document.querySelector('input[name="targets"][value="android"]');
+    if (!androidBox || !splashSettingGroup) return;
+
+    if (androidBox.checked) {
+      splashSettingGroup.classList.remove('opacity-50', 'pointer-events-none');
+      splashColorSettingGroup.classList.remove('opacity-50', 'pointer-events-none');
+    } else {
+      splashSettingGroup.classList.add('opacity-50', 'pointer-events-none');
+      splashColorSettingGroup.classList.add('opacity-50', 'pointer-events-none');
+      
+      if (appSplashInput) {
+        appSplashInput.value = '';
+        splashPreviewImg.src = '';
+        splashPreviewBox.classList.remove('flex');
+        splashPreviewBox.classList.add('hidden');
+        btnRemoveSplash.classList.add('hidden');
+      }
+      if (splashColorInput) splashColorInput.value = '#ffffff';
+    }
+  }
+
   document.querySelectorAll('input[name="targets"]').forEach((box) => {
-    box.addEventListener('change', refreshEstimates);
+    box.addEventListener('change', () => {
+      refreshEstimates();
+      syncSplashState();
+    });
   });
+
+  // Run on initial load
+  syncSplashState();
 
   /* ------------------------------ submit ----------------------------- */
 
   convertForm.addEventListener('submit', async (e) => {
     e.preventDefault();
 
-    if (!webBuildInput.files || webBuildInput.files.length === 0) {
-      alert('Please select a Web App Build (.zip) file.');
+    if (!selectedWebBuildFile) {
+      showNotification('error', 'Missing Build', 'Please select a Web App Build (.zip or folder).');
       return;
     }
 
     const targetBoxes = document.querySelectorAll('input[name="targets"]:checked');
     if (targetBoxes.length === 0) {
-      alert('Please select at least one target platform that this server can build.');
+      showNotification('error', 'No Target Selected', 'Please select at least one target platform that this server can build.');
       return;
     }
 
     const mode = (document.querySelector('input[name="buildMode"]:checked') || {}).value || 'fast';
 
     const formData = new FormData();
-    formData.append('webBuild', webBuildInput.files[0]);
+    formData.append('webBuild', selectedWebBuildFile);
     formData.append('targets', Array.from(targetBoxes).map((cb) => cb.value).join(','));
     formData.append('mode', mode);
     if (appNameInput.value.trim()) formData.append('appName', appNameInput.value.trim());
@@ -392,9 +598,10 @@ document.addEventListener('DOMContentLoaded', () => {
           : 'Rebuilding everything from your upload; the shared baseline will be updated on success.';
       pollJob(body.jobId);
     } catch (err) {
+      watching = null;
       stopPolling();
-      alert(`Conversion failed: ${err.message}`);
-      backToForm();
+      showNotification('error', 'Upload Request Failed', err.message);
+      backToForm(false);
     } finally {
       btnSubmit.disabled = false;
     }
@@ -515,28 +722,91 @@ document.addEventListener('DOMContentLoaded', () => {
     markStep('upload', 'active');
   }
 
-  function backToForm() {
-    watching = null;
-    stopPolling();
+  async function backToForm(prompt = false) {
+    if (prompt === true) {
+      const res = await Swal.fire({
+        title: 'Are you sure?',
+        text: "You are about to go back to the previous menu.",
+        icon: 'warning',
+        showCancelButton: true,
+        background: '#1d232a',
+        color: '#a6adbb',
+        customClass: {
+          confirmButton: 'btn btn-primary',
+          cancelButton: 'btn btn-outline ml-4'
+        },
+        buttonsStyling: false,
+        confirmButtonText: 'Yes, go back'
+      });
+      if (!res.isConfirmed) return;
+    }
+    
+    // Removing `watching = null; stopPolling();` here intentionally!
+    // This allows background polling to continue if the user steps away from
+    // the status screen mid-build, automatically popping up the results and
+    // triggering the download when the server finishes the job.
+    
     statusSection.classList.add('hidden');
     resultSection.classList.add('hidden');
     formSection.classList.remove('hidden');
   }
 
-  btnCancelWatch.addEventListener('click', backToForm);
+  btnCancelWatch.addEventListener('click', () => backToForm(true));
+
+  const Toast = Swal.mixin({
+    toast: true,
+    position: 'top',
+    showConfirmButton: false,
+    timer: 5000,
+    timerProgressBar: true,
+    background: '#1d232a',
+    color: '#a6adbb',
+    didOpen: (toast) => {
+      toast.addEventListener('mouseenter', Swal.stopTimer)
+      toast.addEventListener('mouseleave', Swal.resumeTimer)
+    }
+  });
+
+  function showNotification(type, title, message) {
+    if (type === 'error') {
+      Swal.fire({
+        icon: 'error',
+        title: title,
+        text: message,
+        background: '#1d232a',
+        color: '#a6adbb',
+        customClass: {
+          confirmButton: 'btn btn-error text-error-content'
+        },
+        buttonsStyling: false
+      });
+    } else {
+      Toast.fire({
+        icon: type,
+        title: `${title}: ${message}`
+      });
+    }
+  }
 
   function showFailure(job) {
     const detail = [job.error, ...(job.buildFailures || [])].filter(Boolean).join('\n');
-    alert(`Conversion failed:\n\n${detail || 'Unknown error'}\n\nThe full build log is shown on the page.`);
+    showNotification('error', 'Build Failed', `${detail || 'Unknown error'}\n\nCheck the build log below for exact reasons.`);
+    
     statusTitle.textContent = 'Conversion failed';
     statusSubtitle.textContent = job.error || 'See the build log below.';
     setProgress(100);
     progressTiming.textContent = `Failed after ${formatDuration(job.durationSeconds || job.elapsedSeconds || 0)}`;
     progressBar.classList.add('progress-failed');
+    
+    // Ensure the status pane pops back into view if we were on the home screen
+    formSection.classList.add('hidden');
+    resultSection.classList.add('hidden');
+    statusSection.classList.remove('hidden');
   }
 
   function showResults(job) {
     watching = null;
+    formSection.classList.add('hidden');
     statusSection.classList.add('hidden');
     resultSection.classList.remove('hidden');
     progressBar.classList.remove('progress-failed');
@@ -570,23 +840,37 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       resultNote.classList.add('hidden');
     }
+
+    // Auto-download the results ZIP
+    setTimeout(() => {
+      const dlLink = document.createElement('a');
+      dlLink.href = jobDownloadUrl(job.jobId, job.downloadUrl || `/api/download/${job.jobId}`);
+      dlLink.download = '';
+      document.body.appendChild(dlLink);
+      dlLink.click();
+      document.body.removeChild(dlLink);
+    }, 1000);
   }
 
   btnConvertAnother.addEventListener('click', () => {
-    backToForm();
+    backToForm(false);
     webBuildInput.value = '';
+    if (webBuildFolderInput) webBuildFolderInput.value = '';
+    selectedWebBuildFile = null;
     dropZoneContent.classList.remove('hidden');
     fileInfo.classList.add('hidden');
+    
     appLogoInput.value = '';
     logoPreviewImg.src = '';
-    logoPreviewImg.classList.add('hidden');
-    logoPlaceholder.classList.remove('hidden');
+    logoPreviewBox.classList.remove('flex');
+    logoPreviewBox.classList.add('hidden');
     btnRemoveLogo.classList.add('hidden');
+    
     if (appSplashInput) {
       appSplashInput.value = '';
       splashPreviewImg.src = '';
-      splashPreviewImg.classList.add('hidden');
-      splashPlaceholder.classList.remove('hidden');
+      splashPreviewBox.classList.remove('flex');
+      splashPreviewBox.classList.add('hidden');
       btnRemoveSplash.classList.add('hidden');
     }
     if (splashColorInput) splashColorInput.value = '#ffffff';

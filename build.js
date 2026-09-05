@@ -828,6 +828,38 @@ if (!fsx.isFile(path.join(ctx.distDir, 'index.html'))) {
   process.exit(1);
 }
 
+// Safety check: prevent raw source code builds from passing as valid web builds
+if (fsx.isFile(path.join(ctx.distDir, 'package.json')) || fsx.isDir(path.join(ctx.distDir, 'src'))) {
+  const htmlContext = fs.readFileSync(path.join(ctx.distDir, 'index.html'), 'utf8');
+  if (htmlContext.includes('src="/src/') || htmlContext.includes("src='/src/")) {
+    logError(`ERROR: You uploaded a raw project source folder instead of a compiled web build!`);
+    logError(`Please run your web framework's build command (e.g. 'npm run build') and upload the generated 'dist/' or 'build/' folder instead.`);
+    process.exit(1);
+  }
+}
+
+// Enforce relative routing by replacing leading slashes and explicitly ensuring a base href is present.
+// This prevents Tauri WebViews from rendering a blank white screen because they look for absolute paths
+// at the protocol root (e.g., tauri://localhost/) where standard folder structures often misalign.
+function forceRelativePaths(htmlPath) {
+  try {
+    let content = fs.readFileSync(htmlPath, 'utf8');
+    let patched = content;
+    patched = patched.replace(/src="\/(?!\/)/g, 'src="./');
+    patched = patched.replace(/href="\/(?!\/)/g, 'href="./');
+    if (!/<base\s+href="[^"]*"/i.test(patched)) {
+      patched = patched.replace(/<head>/i, '<head>\n    <base href="./" />');
+    }
+    if (patched !== content) {
+      fs.writeFileSync(htmlPath, patched, 'utf8');
+      log(`Patched ${path.basename(htmlPath)} to enforce relative routing for Tauri.`);
+    }
+  } catch (e) {
+    logError(`Failed to patch routing in index.html: ${e.message}`);
+  }
+}
+forceRelativePaths(path.join(ctx.distDir, 'index.html'));
+
 const outDir = opts.out;
 // Emptied per requested platform so a run that produces fewer artifacts than
 // the last one (e.g. --no-installer) cannot leave a stale binary behind that

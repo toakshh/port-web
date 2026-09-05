@@ -6,6 +6,10 @@
   <title>Portify - Web to Native App Converter</title>
   
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
   <link rel="stylesheet" href="style.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -52,12 +56,16 @@
             </div>
             <div class="p-6">
               <label id="dropZone" class="group flex flex-col items-center justify-center w-full h-56 border-2 border-dashed border-base-content/20 rounded-xl cursor-pointer hover:bg-base-200/50 hover:border-primary transition-all duration-300 relative">
-                <input type="file" id="webBuild" name="webBuild" accept=".zip" required class="hidden" />
+                <input type="file" id="webBuild" name="webBuild" accept=".zip" class="hidden" />
+                <input type="file" id="webBuildFolder" webkitdirectory directory class="hidden" />
                 <div id="dropZoneContent" class="flex flex-col items-center gap-3 text-center pointer-events-none">
                   <div class="w-16 h-16 rounded-full bg-base-200 flex items-center justify-center text-3xl group-hover:bg-primary/20 group-hover:scale-110 transition-transform">📦</div>
-                  <p class="font-bold text-lg">Click or drag ZIP file here</p>
+                  <p class="font-bold text-lg">Click for ZIP, or drag Folder/ZIP here</p>
                   <p class="text-xs text-base-content/60">Must contain index.html.</p>
-                  <span class="badge badge-primary badge-sm">Required</span>
+                  <div class="flex gap-2 pointer-events-auto mt-1">
+                    <button type="button" class="btn btn-primary btn-xs" onclick="document.getElementById('webBuild').click(); return false;">Select ZIP</button>
+                    <button type="button" class="btn btn-secondary btn-xs" onclick="document.getElementById('webBuildFolder').click(); return false;">Select Folder</button>
+                  </div>
                 </div>
                 <!-- File info (Hidden by default) -->
                 <div id="fileInfo" class="hidden absolute inset-0 bg-base-100/95 backdrop-blur flex flex-col items-center justify-center p-6 gap-2">
@@ -102,6 +110,23 @@
                 <div class="absolute inset-0 border-2 border-primary rounded-xl opacity-0 scale-95 group-has-checked:opacity-100 group-has-checked:scale-100 transition-all pointer-events-none"></div>
                 <div class="absolute inset-0 bg-primary/5 group-has-checked:opacity-100 opacity-0 pointer-events-none transition-all"></div>
               </label>
+            </div>
+          </div>
+          
+          <!-- Important Notes Card -->
+          <div class="card bg-base-100 shadow-sm border border-base-300 overflow-hidden mt-2">
+            <div class="bg-base-200/50 p-4 border-b border-base-300">
+              <h2 class="font-bold text-sm tracking-widest uppercase text-base-content/70">Important Guidelines</h2>
+            </div>
+            <div class="p-6 text-sm text-base-content/80 space-y-2">
+              <ul class="list-disc pl-5 space-y-1">
+                <li>For a highly reliable app with extensive legacy device support, always pick the <strong>Clean Rebuild</strong> mode.</li>
+                <li>Upload only the <strong>compiled web output</strong> folder (e.g. <code>dist/</code>, <code>build/</code>, or <code>out/</code>) that contains your static assets.</li>
+                <li>Do <strong>not</strong> upload your raw source project (like React or Vue source files). This service packages static files only; it does not compile raw JSX/TS frameworks.</li>
+                <li>The zip/folder must have a compiled <strong>index.html</strong> exactly at the root level (not nested in deeper subfolders).</li>
+                <li>All internal asset paths should ideally be relative (e.g. <code>./assets/</code> instead of <code>/assets/</code>) for optimal stability inside the native webview.</li>
+                <li>There must not be any <code>node_modules</code> directory inside the uploaded bundle.</li>
+              </ul>
             </div>
           </div>
           
@@ -170,7 +195,7 @@
                     </label>
                     <button type="button" class="text-xs text-error font-medium w-full mt-2 hidden hover:underline" id="btnRemoveLogo">Clear</button>
                   </div>
-                  <div class="flex flex-col">
+                  <div class="flex flex-col" id="splashSettingGroup">
                     <label class="text-xs font-bold uppercase mb-2 block opacity-70 text-center">Splash</label>
                     <label class="flex flex-col items-center justify-center p-3 border border-base-300 rounded-xl hover:bg-base-200 hover:border-primary/50 cursor-pointer text-center relative max-h-16 overflow-hidden h-16 transition-all" id="btnBrowseSplashLabel">
                       <input type="file" id="appSplash" name="appSplash" accept="image/png,image/jpeg,image/webp" class="hidden" />
@@ -181,7 +206,7 @@
                     </label>
                     <button type="button" class="text-xs text-error font-medium w-full mt-2 hidden hover:underline" id="btnRemoveSplash">Clear</button>
                   </div>
-                  <div class="flex flex-col">
+                  <div class="flex flex-col" id="splashColorSettingGroup">
                     <label class="text-xs font-bold uppercase mb-2 block opacity-70 text-center" title="Color">BG Color</label>
                     <div class="border border-base-300 rounded-xl overflow-hidden h-16 hover:border-primary/50 transition-all shadow-sm">
                       <input type="color" id="splashColor" name="splashColor" value="#ffffff" class="w-full h-full p-0 border-0 cursor-pointer scale-150 transform origin-center" />
@@ -204,7 +229,6 @@
 
     <!-- Status / Progress Card (Hidden by default) -->
     <section class="card bg-base-100 shadow-xl border border-base-300 hidden" id="statusSection">
-      ... (Kept similar minimalized structure to integrate with app.js) ...
       <div class="card-body p-8 sm:p-12 items-center text-center">
         <span class="loading loading-ring loading-lg text-primary mb-4 w-16 h-16"></span>
         <h2 id="statusTitle" class="text-3xl font-bold tracking-tight mb-2">Converting Web App...</h2>
@@ -228,23 +252,22 @@
           </div>
         </div>
 
-        <div class="w-full max-w-2xl mt-8 mockup-code bg-neutral text-neutral-content text-left text-xs shadow-lg h-48 overflow-auto">
-          <div class="sticky top-0 bg-neutral w-full px-4 py-2 border-b border-neutral-content/10 font-bold flex justify-between z-10 backdrop-blur">
+        <div class="w-full max-w-2xl mt-8 mockup-code bg-neutral text-neutral-content text-left text-xs shadow-lg h-64 min-h-[12rem] resize-y overflow-auto flex flex-col">
+          <div class="sticky top-0 bg-neutral w-full px-4 py-2 border-b border-neutral-content/10 font-bold flex justify-between z-10 backdrop-blur shrink-0">
             <span>Build log</span>
             <span class="text-primary font-mono" id="liveJobId"></span>
           </div>
-          <pre class="px-4 py-4 m-0" id="logOutput"><code>Waiting for the build to start...</code></pre>
+          <pre class="px-4 py-4 m-0 flex-1 overflow-visible" id="logOutput"><code>Waiting for the build to start...</code></pre>
         </div>
 
         <button type="button" class="btn btn-outline btn-sm mt-8 opacity-70" id="btnCancelWatch">
-          ← Back to the form
+          ← Back to the Home
         </button>
       </div>
     </section>
 
     <!-- Results & Download Card -->
     <section class="card bg-gradient-to-b from-base-200/50 to-base-100 border border-success/50 shadow-xl hidden" id="resultSection">
-      ... (Kept identical result markup to mesh perfectly with app.js expectations) ...
       <div class="card-body p-8 items-center text-center">
         <div class="text-6xl mb-4 animate-bounce">🎉</div>
         <h2 class="text-3xl font-bold tracking-tight mb-2 text-success">Conversion Complete!</h2>
